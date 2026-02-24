@@ -44,6 +44,7 @@ import numpy as np
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -325,6 +326,124 @@ def estimate_carrier(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Interaktywna diagnostyka fazy próbkowania
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _interactive_probe(probe_raw, rejected_snrs, probe_n,
+                       min_snr_db, carrier_hint, n_welch_sub, center_freq):
+    """
+    Analizuje wyniki pierwszych probe_n bloków i pyta użytkownika o korektę.
+
+    Args:
+        probe_raw     : lista (t, freq_abs, snr) – WSZYSTKIE bloki próbki
+        rejected_snrs : lista snr bloków poniżej progu
+        probe_n       : liczba bloków próbki
+        min_snr_db    : bieżący próg SNR
+        carrier_hint  : bieżący carrier hint (lub None)
+        n_welch_sub   : bieżąca liczba sub-bloków Welcha
+        center_freq   : częstotliwość centralna [Hz]
+
+    Returns:
+        dict z nowymi parametrami, np. {'min_snr_db': 1.5} lub {}
+    """
+    n_ok = len([r for r in probe_raw if r[2] >= min_snr_db])
+    accept_rate = n_ok / max(probe_n, 1)
+
+    SEP = "─" * 54
+    print(f"\n  {SEP}")
+    print(f"  Diagnostyka po {probe_n} blokach próbkowania:")
+    print(f"  Akceptacja : {n_ok}/{probe_n} ({accept_rate*100:.0f}%)", end="")
+
+    if accept_rate >= 0.70:
+        print("  ✓ OK")
+        print(f"  {SEP}\n")
+        return {}
+
+    print("  ← niska!")
+
+    ok_snrs = [r[2] for r in probe_raw if r[2] >= min_snr_db]
+    if ok_snrs:
+        ok_offsets = [r[1] - center_freq for r in probe_raw if r[2] >= min_snr_db]
+        print(f"  SNR ok     : min={min(ok_snrs):.1f}  avg={sum(ok_snrs)/len(ok_snrs):.1f}"
+              f"  max={max(ok_snrs):.1f} dB")
+        print(f"  Offset ok  : avg={sum(ok_offsets)/len(ok_offsets):+.0f} Hz  "
+              f"drift={max(ok_offsets)-min(ok_offsets):.1f} Hz")
+    if rejected_snrs:
+        avg_rej = sum(rejected_snrs) / len(rejected_snrs)
+        print(f"  SNR odrzuc.: avg={avg_rej:.1f} dB  (próg={min_snr_db:.1f} dB)")
+
+    suggestions = []
+
+    # Sugestia 1: obniż próg SNR
+    if rejected_snrs:
+        avg_rej = sum(rejected_snrs) / len(rejected_snrs)
+        if avg_rej > min_snr_db * 0.4 and min_snr_db > 1.5:
+            new_snr = max(1.0, round(avg_rej * 0.85, 1))
+            suggestions.append({
+                'desc': f"Obniż próg SNR: {min_snr_db:.1f} → {new_snr:.1f} dB",
+                'param': 'min_snr_db', 'new': new_snr,
+            })
+
+    # Sugestia 2: zwiększ Welch sub-bloki
+    if n_welch_sub < 100 and accept_rate < 0.5:
+        new_sub = min(200, n_welch_sub * 4)
+        gain = 10 * math.log10(new_sub / n_welch_sub)
+        suggestions.append({
+            'desc': f"Zwiększ Welch sub-bloki: {n_welch_sub} → {new_sub} (+{gain:.0f} dB SNR)",
+            'param': 'n_welch_sub', 'new': new_sub,
+        })
+
+    # Sugestia 3: podaj carrier-hint
+    if carrier_hint is None and accept_rate < 0.2:
+        suggestions.append({
+            'desc': "Podaj przybliżony offset nośnej od center [Hz] jako carrier-hint",
+            'param': 'carrier_hint', 'new': None,  # wartość podana przez użytkownika
+        })
+
+    if not suggestions:
+        print(f"\n  Brak konkretnych sugestii – kontynuuję z obecnymi parametrami.")
+        print(f"  {SEP}\n")
+        return {}
+
+    print(f"\n  Proponowane zmiany (wybierz numer lub Enter = bez zmian):")
+    for k, s in enumerate(suggestions, 1):
+        print(f"  [{k}] {s['desc']}")
+    print(f"  [0] Kontynuuj bez zmian")
+
+    try:
+        choice = input(f"\n  Twój wybór (0-{len(suggestions)}): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print(f"  {SEP}\n")
+        return {}
+
+    if not choice or choice == '0':
+        print(f"  {SEP}\n")
+        return {}
+
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(suggestions):
+            s = suggestions[idx]
+            if s['new'] is None:  # carrier_hint – ask for value
+                try:
+                    val_str = input("  Podaj offset nośnej od center [Hz] (np. -15000): ").strip()
+                    s['new'] = float(val_str)
+                except (ValueError, EOFError):
+                    print("  Niepoprawna wartość – bez zmian.")
+                    print(f"  {SEP}\n")
+                    return {}
+            print(f"  ✓ Zastosowano: {s['desc']}")
+            print(f"  {SEP}\n")
+            return {s['param']: s['new']}
+    except ValueError:
+        pass
+
+    print(f"  {SEP}\n")
+    return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Przetwarzanie blokowe
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -338,6 +457,7 @@ def process_iq(
     carrier_hint    = None,
     hint_bw         = 50_000,
     excl_sidebands  = True,
+    interactive     = True,
 ):
     """
     Przesuwa okno integracji i zbiera pomiary częstotliwości nośnej.
@@ -377,6 +497,14 @@ def process_iq(
 
     measurements = []
     skipped = 0
+    rejected_snrs = []   # SNR odrzuconych bloków (poniżej progu)
+    probe_raw = []       # (t, freq_abs, snr) – wszystkie bloki fazy próbkowania
+
+    use_tty = interactive and sys.stdout.isatty() and sys.stdin.isatty()
+    probe_n = min(20, max(10, n_blocks // 10))
+    probe_done = (not interactive) or (probe_n >= n_blocks)
+
+    t0_proc = time.time()
 
     for i in range(n_blocks):
         block = iq[i*spb : (i+1)*spb]
@@ -391,24 +519,83 @@ def process_iq(
                 hint_bw=hint_bw, excl_sidebands=excl_sidebands,
             )
         except Exception as e:
-            print(f"  [ERR] blok {i+1:4d}: {e}", file=sys.stderr)
+            if use_tty:
+                print(f"\r  [ERR] blok {i+1:4d}: {e}     ")
+            else:
+                print(f"  [ERR] blok {i+1:4d}: {e}", file=sys.stderr)
             skipped += 1
             continue
 
         offset = freq_abs - center_freq
+        accepted = snr >= min_snr_db
 
-        if snr < min_snr_db:
+        if accepted:
+            measurements.append((t, freq_abs, snr))
+        else:
             skipped += 1
-            if skipped <= 3 or (i+1) % 60 == 0:
-                print(f"  [--]  {i+1:4d}/{n_blocks}  "
-                      f"offset={offset:+10.2f} Hz  SNR={snr:5.1f} dB  <-- ponizej progu")
-            continue
+            rejected_snrs.append(snr)
 
-        measurements.append((t, freq_abs, snr))
+        # Zbierz dane fazy próbkowania (przed diagnozą)
+        if not probe_done:
+            probe_raw.append((t, freq_abs, snr))
 
-        if len(measurements) <= 5 or (i+1) % 30 == 0 or i == n_blocks-1:
-            print(f"  [OK]  {i+1:4d}/{n_blocks}  {_dt_to_tdm(t)}  "
-                  f"offset={offset:+10.2f} Hz  SNR={snr:5.1f} dB")
+        # ── Pasek postępu (TTY) ───────────────────────────────────────────
+        if use_tty:
+            elapsed = time.time() - t0_proc
+            if i > 0 and elapsed > 0:
+                eta_s = elapsed / (i + 1) * (n_blocks - i - 1)
+                eta_str = f"ETA {int(eta_s//60):02d}:{int(eta_s%60):02d}"
+            else:
+                eta_str = "ETA --:--"
+            n_ok = len(measurements)
+            accept_pct = n_ok / (i + 1) * 100
+            status = "✓" if accepted else "✗"
+            bw = 28
+            filled = int(bw * (i + 1) / n_blocks)
+            bar = '█' * filled + '░' * (bw - filled)
+            print(f"\r  {status} [{bar}] {i+1}/{n_blocks} | "
+                  f"ok:{n_ok}({accept_pct:.0f}%) | "
+                  f"off:{offset:+.0f}Hz | SNR:{snr:.1f}dB | {eta_str}   ",
+                  end='', flush=True)
+        else:
+            # Nie-TTY: linie co jakiś czas (zachowane oryginalne zachowanie)
+            if accepted:
+                if len(measurements) <= 5 or (i+1) % 30 == 0 or i == n_blocks-1:
+                    print(f"  [OK]  {i+1:4d}/{n_blocks}  {_dt_to_tdm(t)}  "
+                          f"offset={offset:+10.2f} Hz  SNR={snr:5.1f} dB")
+            else:
+                if len(rejected_snrs) <= 3 or (i+1) % 60 == 0:
+                    print(f"  [--]  {i+1:4d}/{n_blocks}  "
+                          f"offset={offset:+10.2f} Hz  SNR={snr:5.1f} dB  <-- ponizej progu")
+
+        # ── Diagnostyka po fazie próbkowania ──────────────────────────────
+        if not probe_done and (i + 1) == probe_n:
+            probe_done = True
+            if use_tty:
+                print()  # newline po pasku postępu
+            new_params = _interactive_probe(
+                probe_raw, rejected_snrs[:], probe_n,
+                min_snr_db, carrier_hint, n_welch_sub, center_freq,
+            )
+            if new_params:
+                if 'min_snr_db' in new_params:
+                    min_snr_db = new_params['min_snr_db']
+                    # Przelicz bloki próbki z nowym progiem
+                    measurements = [(t2, f, s) for t2, f, s in probe_raw if s >= min_snr_db]
+                    skipped = sum(1 for _, _, s in probe_raw if s < min_snr_db)
+                    rejected_snrs = [s for _, _, s in probe_raw if s < min_snr_db]
+                    print(f"  Przeliczono {len(probe_raw)} bloków próbki → {len(measurements)} ok")
+                if 'n_welch_sub' in new_params:
+                    n_welch_sub = new_params['n_welch_sub']
+                    snr_gain_new = 10 * math.log10(max(1, n_welch_sub))
+                    print(f"  Nowe Welch sub-bloki: {n_welch_sub} (zysk ~{snr_gain_new:.1f} dB)")
+                if 'carrier_hint' in new_params:
+                    carrier_hint = new_params['carrier_hint']
+                    print(f"  Nowy carrier hint: {carrier_hint:+.0f} Hz")
+                print(f"  Kontynuuję od bloku {i+2}/{n_blocks}...\n")
+
+    if use_tty:
+        print()  # newline po ostatnim pasku postępu
 
     print(f"\n  Zaakceptowane: {len(measurements)}/{n_blocks}  (pominiete: {skipped})")
 
@@ -603,6 +790,8 @@ def build_parser():
     p.add_argument("--comment", type=str)
     p.add_argument("--plot", action="store_true",
                    help="Zapisz widmo Welcha do PNG (wymaga matplotlib)")
+    p.add_argument("--no-interactive", action="store_true",
+                   help="Wyłącz interaktywną diagnostykę i pasek postępu (dla skryptów/cron)")
     return p
 
 
@@ -687,6 +876,7 @@ def main():
         carrier_hint    = args.carrier_hint,
         hint_bw         = args.hint_bw,
         excl_sidebands  = not args.no_excl_sidebands,
+        interactive     = not args.no_interactive,
     )
 
     if not meas:
