@@ -37,3 +37,33 @@ camras_workflow.py
 correlate.py
 find.py
 CLAUDE.md
+
+# Experimental / reference scripts (not part of main workflow)
+converter.py
+sigmf_to_tdm.py
+iq_wav_to_tdm.py
+read_auxi.py
+STRFtoCCSDS.ipynb
+
+# Local test scripts
+create_noise_prefix_test.py
+
+# Generated TDM outputs from development sessions (root dir)
+/SP5LOT_*.tdm
+/CAMRAS_202*.tdm
+/CAMRAS_Orion_20221119_v1.tdm
+
+# Images and plots
+*.jpg
+*.png
+
+# Duplicate SigMF metas (canonical copies are in examples/)
+/gqrx_20260221_151916_2260790300_125000_fc.sigmf-meta
+/camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta
+
+# Local test data directory
+camras_test/
+
+# Noise-prefix test files
+examples/camras_noise_prefix.*
+examples/kplo_noise_prefix.*
