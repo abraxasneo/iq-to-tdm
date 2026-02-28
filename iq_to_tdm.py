@@ -474,6 +474,7 @@ def process_iq(
     interactive     = True,
     oqpsk           = False,
     auto            = False,
+    adaptive        = False,
 ):
     """
     Slide integration window and collect carrier frequency measurements.
@@ -514,6 +515,8 @@ def process_iq(
         print(f"  Mode             : OQPSK (IQ^4, /4)")
     else:
         print(f"  Mode             : carrier (Welch)")
+    if adaptive:
+        print(f"  Adaptive         : yes (auto-increase welch-sub if acceptance < 70%)")
     print(f"  Blocks           : {n_blocks}")
     print(f"{'='*64}")
 
@@ -526,7 +529,8 @@ def process_iq(
 
     use_tty = interactive and sys.stdout.isatty() and sys.stdin.isatty()
     probe_n = min(20, max(10, n_blocks // 10))
-    probe_done = (not interactive) or (probe_n >= n_blocks)
+    # Probe phase runs if: interactive OR adaptive (adaptive works without TTY)
+    probe_done = (not interactive and not adaptive) or (probe_n >= n_blocks)
 
     t0_proc = time.time()
 
@@ -622,31 +626,77 @@ def process_iq(
                     print(f"  [--]  {i+1:4d}/{n_blocks}  "
                           f"offset={offset:+10.2f} Hz  SNR={snr:5.1f} dB  <-- below threshold")
 
-        # -- Diagnostics after probe phase ----------------------------------
+        # -- Diagnostics / adaptation after probe phase ---------------------
         if not probe_done and (i + 1) == probe_n:
             probe_done = True
             if use_tty:
                 print()  # newline after progress bar
-            new_params = _interactive_probe(
-                probe_raw, rejected_snrs[:], probe_n,
-                min_snr_db, carrier_hint, n_welch_sub, center_freq,
-            )
-            if new_params:
-                if 'min_snr_db' in new_params:
-                    min_snr_db = new_params['min_snr_db']
-                    # Re-score probe blocks with new threshold
-                    measurements = [(t2, f, s) for t2, f, s in probe_raw if s >= min_snr_db]
-                    skipped = sum(1 for _, _, s in probe_raw if s < min_snr_db)
-                    rejected_snrs = [s for _, _, s in probe_raw if s < min_snr_db]
-                    print(f"  Re-scored {len(probe_raw)} probe blocks -> {len(measurements)} accepted")
-                if 'n_welch_sub' in new_params:
-                    n_welch_sub = new_params['n_welch_sub']
-                    snr_gain_new = 10 * math.log10(max(1, n_welch_sub))
-                    print(f"  New Welch sub-blocks: {n_welch_sub} (gain ~{snr_gain_new:.1f} dB)")
-                if 'carrier_hint' in new_params:
-                    carrier_hint = new_params['carrier_hint']
-                    print(f"  New carrier hint: {carrier_hint:+.0f} Hz")
-                print(f"  Continuing from block {i+2}/{n_blocks}...\n")
+
+            n_ok_probe = sum(1 for _, _, s in probe_raw if s >= min_snr_db)
+            accept_rate = n_ok_probe / max(probe_n, 1)
+
+            if adaptive and accept_rate < 0.70:
+                # Automatically increase welch sub-blocks until acceptance >= 70%
+                # or we hit the cap (500). Re-process probe blocks each time.
+                MAX_ADAPTIVE_SUB = 500
+                adapted = False
+                while accept_rate < 0.70 and n_welch_sub < MAX_ADAPTIVE_SUB:
+                    new_sub = min(MAX_ADAPTIVE_SUB, n_welch_sub * 4)
+                    snr_gain_new = 10 * math.log10(max(1, new_sub))
+                    print(f"  [adaptive] acceptance {accept_rate*100:.0f}% < 70% -- "
+                          f"increasing welch-sub: {n_welch_sub} -> {new_sub} "
+                          f"(gain ~{snr_gain_new:.1f} dB)")
+                    n_welch_sub = new_sub
+                    # Re-score probe blocks with new sub count
+                    new_probe = []
+                    for t2, f2, _ in probe_raw:
+                        idx2 = int((t2 - start_time).total_seconds() / integration_sec) - 1
+                        blk2 = iq[idx2*spb : (idx2+1)*spb]
+                        try:
+                            f2new, s2new = estimate_carrier(
+                                blk2, sample_rate, center_freq,
+                                fft_size=eff_fft, n_sub=n_welch_sub,
+                                search_bw=search_bw, carrier_hint=carrier_hint,
+                                hint_bw=hint_bw, excl_sidebands=excl_sidebands,
+                                oqpsk=oqpsk,
+                            )
+                            new_probe.append((t2, f2new, s2new))
+                        except Exception:
+                            new_probe.append((t2, f2, 0.0))
+                    probe_raw = new_probe
+                    n_ok_probe = sum(1 for _, _, s in probe_raw if s >= min_snr_db)
+                    accept_rate = n_ok_probe / max(probe_n, 1)
+                    adapted = True
+
+                measurements = [(t2, f2, s2) for t2, f2, s2 in probe_raw if s2 >= min_snr_db]
+                skipped = sum(1 for _, _, s in probe_raw if s < min_snr_db)
+                rejected_snrs = [s for _, _, s in probe_raw if s < min_snr_db]
+                if adapted:
+                    print(f"  [adaptive] probe acceptance after adaptation: "
+                          f"{n_ok_probe}/{probe_n} ({accept_rate*100:.0f}%)")
+                    print(f"  Continuing from block {i+2}/{n_blocks} "
+                          f"with welch-sub={n_welch_sub}...\n")
+
+            elif interactive:
+                new_params = _interactive_probe(
+                    probe_raw, rejected_snrs[:], probe_n,
+                    min_snr_db, carrier_hint, n_welch_sub, center_freq,
+                )
+                if new_params:
+                    if 'min_snr_db' in new_params:
+                        min_snr_db = new_params['min_snr_db']
+                        measurements = [(t2, f, s) for t2, f, s in probe_raw if s >= min_snr_db]
+                        skipped = sum(1 for _, _, s in probe_raw if s < min_snr_db)
+                        rejected_snrs = [s for _, _, s in probe_raw if s < min_snr_db]
+                        print(f"  Re-scored {len(probe_raw)} probe blocks -> {len(measurements)} accepted")
+                    if 'n_welch_sub' in new_params:
+                        n_welch_sub = new_params['n_welch_sub']
+                        snr_gain_new = 10 * math.log10(max(1, n_welch_sub))
+                        print(f"  New Welch sub-blocks: {n_welch_sub} (gain ~{snr_gain_new:.1f} dB)")
+                    if 'carrier_hint' in new_params:
+                        carrier_hint = new_params['carrier_hint']
+                        print(f"  New carrier hint: {carrier_hint:+.0f} Hz")
+                    print(f"  Continuing from block {i+2}/{n_blocks}...\n")
 
     if use_tty:
         print()  # newline after final progress bar
@@ -850,6 +900,12 @@ def build_parser():
                        "OQPSK IQ^4 recovery (Artemis II). "
                        "Useful when the signal type is unknown."
                    ))
+    p.add_argument("--adaptive", action="store_true",
+                   help=(
+                       "Automatically increase --welch-sub if the probe-phase acceptance "
+                       "rate is below 70%%. Tries 4x multiplier up to 500 sub-blocks. "
+                       "Useful for weak signals when you don't know how much averaging is needed."
+                   ))
     p.add_argument("--max-samples",  type=int,  default=None,
                    help="Load only first N samples (for testing on large files)")
     p.add_argument("--skip-samples", type=int,  default=None,
@@ -951,6 +1007,7 @@ def main():
         interactive     = not args.no_interactive,
         oqpsk           = args.oqpsk,
         auto            = args.auto,
+        adaptive        = args.adaptive,
     )
 
     if not meas:

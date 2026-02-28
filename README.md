@@ -250,17 +250,27 @@ python iq_to_tdm.py \
 Note: `--oqpsk` incurs ~12 dB SNR penalty vs direct carrier detection. For weak signals:
 `--integration 5.0 --welch-sub 100`
 
-### Weak signal — increase integration and averaging
+### Weak signal — automatic averaging adjustment
+
+Use `--adaptive` to let the converter find the right amount of averaging automatically.
+It processes the first ~10% of blocks as a probe, and if the acceptance rate is below 70%,
+it automatically increases `--welch-sub` by 4× (up to 500) and re-processes the probe:
 
 ```bash
 python iq_to_tdm.py \
     --input  recording.sigmf-meta \
     --station MY_CALLSIGN \
-    --integration 5.0 \
-    --welch-sub 100 \
-    --min-snr 2.0 \
     --auto \
+    --adaptive \
     --output output.tdm
+```
+
+Example output when signal is weak:
+```
+  [adaptive] acceptance 20% < 70% -- increasing welch-sub: 20 -> 80 (gain ~19.0 dB)
+  [adaptive] acceptance 60% < 70% -- increasing welch-sub: 80 -> 320 (gain ~25.1 dB)
+  [adaptive] probe acceptance after adaptation: 9/10 (90%)
+  Continuing from block 11/60 with welch-sub=320...
 ```
 
 ---
@@ -340,6 +350,8 @@ Periods with no detectable signal are reported as +0.000 Hz.
 --no-excl-sidebands  Do not exclude PCM/PM/NRZ sideband regions
 --oqpsk          OQPSK suppressed-carrier mode (IQ⁴ /4) for Artemis II
 --auto           Auto-detect per block: CW carrier first, OQPSK fallback
+--adaptive       Auto-increase --welch-sub if probe-phase acceptance < 70%
+                 (tries 4x multiplier up to 500 sub-blocks automatically)
 --max-samples    Load only first N samples (for testing)
 --skip-samples   Skip first N samples (for testing mid-file segments)
 --freq           Override center frequency [Hz]
