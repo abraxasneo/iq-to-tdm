@@ -27,42 +27,38 @@ tracking programs for Artemis and lunar missions.
 
 ## Validation
 
-### Artemis I — CAMRAS Dwingeloo Radio Telescope
+### Artemis I — CAMRAS Dwingeloo Radio Telescope (DRO departure burn, 2022-12-01)
 
-The CAMRAS IQ recording
-`camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta`
-was made by Stichting CAMRAS at the 25-metre Dwingeloo Radio Telescope,
-Dwingeloo, Netherlands (6.396°E, 52.812°N) on 2022-11-19 at 10:07:16 UTC,
-day 3 of the Artemis I trans-lunar cruise. The recording is licensed CC BY 4.0.
-Equipment: DIFI-compliant receiver, external PPS reference, 2.0 Msps, ci16_le.
+The primary validation uses the publicly available CAMRAS IQ clip
+`examples/small.sigmf-meta` recorded at the 25-metre Dwingeloo Radio Telescope
+on **2022-12-01 at 21:42:38 UTC** (Artemis I DRO departure burn day).
+Equipment: DIFI-compliant receiver, external PPS reference, 2.0 Msps, ci16_le. CC BY 4.0.
 
-Processing this IQ file with `iq-to-tdm` produces:
+Processing with `iq-to-tdm` (integration 0.3 s, `--carrier-hint -45617 --hint-bw 15000`):
 
-**`examples/CAMRAS_20221119_100716_SP5LOT.tdm`** — 9 measurements,
-10:07:17–10:07:25 UTC:
+**`examples/generated_small.tdm`** — Doppler **-45627.5 Hz** relative to 2216.5 MHz.
 
-```
-RECEIVE_FREQ_2 = 2022-323T10:07:17.000  -50142.634
-RECEIVE_FREQ_2 = 2022-323T10:07:18.000  -50141.443
-RECEIVE_FREQ_2 = 2022-323T10:07:19.000  -50143.184
-...
-RECEIVE_FREQ_2 = 2022-323T10:07:25.000  -50141.956
-```
+Independent cross-check against CAMRAS single-FFT log (`doppler_20221201.txt`,
+available at [data.camras.nl/artemis](https://data.camras.nl/artemis/)):
+at the same timestamp the single-FFT measurement reads **-45617 Hz**
+— a difference of **~10 Hz**, within the single-FFT noise floor (±20 kHz).
+This confirms the converter correctly identifies the carrier frequency.
 
-Doppler offset stable at **-50142 +/- 1 Hz** relative to 2216.5 MHz center
-(radial velocity approximately -6783 m/s, spacecraft moving away from Earth
-during trans-lunar insertion phase).
+### Artemis I — CAMRAS IQ 2022-11-19, format reference only
 
-For the same spacecraft on the same day, CAMRAS published an independent TDM
-file `CAMRAS_Orion_20221119_v1.tdm` (also included in `examples/`) covering
-12:30:01–13:02:06 UTC — 2.5 hours later in the same orbital pass. Their values
-are approximately -5557 Hz (absolute measurement, FREQ_OFFSET = 0), equivalent
-to a radial velocity of -752 m/s at that later time. The large difference
-reflects the genuine change in Orion's radial velocity relative to Dwingeloo
-across those 2.5 hours as the spacecraft continued its trans-lunar trajectory.
-Both files use CCSDS TDM v2.0 format; the formatting conventions differ
-(CAMRAS: `FREQ_OFFSET = 0`, `INTEGRATION_REF = MIDDLE`;
-ours: `FREQ_OFFSET = center_freq`, `INTEGRATION_REF = END` per NASA guidance).
+The IQ recording `camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta`
+(2022-11-19, 10:07 UTC) is included as a format and processing example.
+Processing produces **`examples/CAMRAS_20221119_100716_SP5LOT.tdm`** — 9 measurements,
+Doppler stable at **-50142 ± 1 Hz**.
+
+Note: the CAMRAS reference TDM `CAMRAS_Orion_20221119_v1.tdm` covers 12:30–13:02 UTC
+on the same day — a **different time window**. No CAMRAS IQ recording for the 12:30 UTC
+session is publicly available (confirmed against the full CAMRAS archive index at
+[gitlab.camras.nl/dijkema/artemistracking](https://gitlab.camras.nl/dijkema/artemistracking)),
+so direct numerical comparison is not possible. The reference TDM is included for
+CCSDS format reference only. Both files use TDM v2.0; conventions differ
+(`FREQ_OFFSET = 0`, `INTEGRATION_REF = MIDDLE` vs. our `FREQ_OFFSET = center_freq`,
+`INTEGRATION_REF = END` per NASA guidance).
 
 ### KPLO/Danuri — SP5LOT, 2026-02-21
 
