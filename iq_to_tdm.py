@@ -254,9 +254,15 @@ def estimate_carrier(
     carrier_hint = None,
     hint_bw     = 50_000,
     excl_sidebands = True,
+    oqpsk       = False,
 ):
     """
     Znajdź residual carrier PCM/PM/NRZ metodą Welcha.
+
+    Tryb --oqpsk (M-th power carrier recovery):
+      Dla OQPSK (suppressowana nośna) podnosimy IQ do 4. potęgi.
+      Modulacja QPSK znika (fazy 0/90/180/270° → wszystkie ×4 = 0°),
+      pozostaje czysta linia CW na 4×Δf. Wynik dzielimy przez 4.
 
     Logika maski wyszukiwania:
       1. search_bw  → ogranicz do środkowego search_bw Hz
@@ -266,7 +272,13 @@ def estimate_carrier(
     Returns:
         (freq_abs_hz, snr_db)
     """
-    psd   = welch_psd(iq_block, fft_size, n_sub)
+    if oqpsk:
+        # Podnieś do 4. potęgi — usuwa modulację OQPSK, zostaje CW na 4×Δf
+        iq_proc = (iq_block.astype(np.complex128) ** 4).astype(np.complex64)
+    else:
+        iq_proc = iq_block
+
+    psd   = welch_psd(iq_proc, fft_size, n_sub)
     freqs = np.fft.fftfreq(fft_size, d=1.0/sample_rate)   # offset [Hz] od center
     bin_hz = sample_rate / fft_size
 
@@ -301,6 +313,10 @@ def estimate_carrier(
     # fftfreq convention: bin > N/2 → ujemne częstotliwości
     if peak > fft_size // 2:
         raw_offset -= sample_rate
+
+    # OQPSK: sygnał był na 4×Δf → podziel przez 4
+    if oqpsk:
+        raw_offset /= 4.0
 
     freq_abs = center_freq + raw_offset
 
@@ -458,6 +474,7 @@ def process_iq(
     hint_bw         = 50_000,
     excl_sidebands  = True,
     interactive     = True,
+    oqpsk           = False,
 ):
     """
     Przesuwa okno integracji i zbiera pomiary częstotliwości nośnej.
@@ -492,6 +509,7 @@ def process_iq(
     if carrier_hint is not None:
         print(f"  Carrier hint     : {carrier_hint:+.0f} Hz od center")
     print(f"  Wyklucz sidebands: {'TAK' if excl_sidebands else 'NIE'}")
+    print(f"  Tryb OQPSK       : {'TAK (IQ^4, /4)' if oqpsk else 'NIE'}")
     print(f"  Bloków            : {n_blocks}")
     print(f"{'='*64}")
 
@@ -517,6 +535,7 @@ def process_iq(
                 fft_size=eff_fft, n_sub=n_welch_sub,
                 search_bw=search_bw, carrier_hint=carrier_hint,
                 hint_bw=hint_bw, excl_sidebands=excl_sidebands,
+                oqpsk=oqpsk,
             )
         except Exception as e:
             if use_tty:
@@ -782,6 +801,13 @@ def build_parser():
                    ))
     p.add_argument("--no-excl-sidebands", action="store_true",
                    help="NIE wyklucz obszarow sideband przy szukaniu nosnej")
+    p.add_argument("--oqpsk", action="store_true",
+                   help=(
+                       "Tryb OQPSK/suppressowana nośna (Artemis II). "
+                       "Podnosi IQ do 4. potęgi przed Welchem (M-th power carrier recovery), "
+                       "usuwa modulację QPSK i ujawnia nośną jako CW na 4×Δf. "
+                       "Wynik dzielony przez 4. Użyj z --no-excl-sidebands."
+                   ))
     p.add_argument("--max-samples",  type=int,  default=None,
                    help="Max probek do zaladowania (do testow na duzych plikach)")
     p.add_argument("--output",  "-o", default=None, help="Plik wyjsciowy TDM")
@@ -877,6 +903,7 @@ def main():
         hint_bw         = args.hint_bw,
         excl_sidebands  = not args.no_excl_sidebands,
         interactive     = not args.no_interactive,
+        oqpsk           = args.oqpsk,
     )
 
     if not meas:
@@ -888,11 +915,13 @@ def main():
     out = Path(args.output) if args.output else \
           Path(f"{args.station}_{t0.strftime('%Y%m%d_%H%M%S')}.tdm")
 
+    mode_str = "OQPSK (M-th power /4)" if args.oqpsk else "carrier (Welch)"
     auto_cmt = (
         f"Artemis II one-way Doppler tracking\n"
         f"Source: {inp.name}\n"
         f"HW: {info.get('hw','?')} | "
-        f"FFT={args.fft_size} Welch={args.welch_sub} int={args.integration}s"
+        f"FFT={args.fft_size} Welch={args.welch_sub} int={args.integration}s | "
+        f"mode={mode_str}"
     )
     write_tdm(meas, out, args.station, cf, args.integration,
               args.originator, args.dsn_station, args.comment or auto_cmt,
