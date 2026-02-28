@@ -167,6 +167,44 @@ python iq_to_tdm.py \
     --output artemis_small.tdm
 ```
 
+### Suppressed-carrier signals (Artemis II OQPSK)
+
+Artemis I transmits a residual CW carrier (detectable directly). Artemis II uses
+**OQPSK** — a suppressed-carrier modulation where the carrier is not present as a
+discrete spectral line. Use `--oqpsk` to apply 4th-power carrier recovery (IQ^4):
+the QPSK data modulation disappears and the carrier reappears at 4×Δf, which is
+then divided by 4 to recover the true Doppler offset.
+
+```bash
+python iq_to_tdm.py \
+    --input  artemis2_recording.sigmf-meta \
+    --station MY_CALLSIGN \
+    --participant-1 ORION \
+    --oqpsk \
+    --no-excl-sidebands \
+    --output artemis2.tdm
+```
+
+Note: `--oqpsk` incurs ~12 dB SNR penalty vs direct carrier detection.
+For weak signals, increase integration and Welch sub-blocks:
+`--integration 5.0 --welch-sub 100`.
+
+### Automatic modulation detection
+
+Use `--auto` when the modulation type is unknown or may change within the
+recording (e.g., mixed KPLO + Artemis sessions, or unknown spacecraft).
+Per integration block: tries direct carrier detection first; falls back to
+OQPSK IQ^4 if carrier SNR is below threshold. Summary printed at end:
+`Tryby detekcji: carrier=X  OQPSK=Y`.
+
+```bash
+python iq_to_tdm.py \
+    --input  recording.sigmf-meta \
+    --station MY_CALLSIGN \
+    --auto \
+    --output output.tdm
+```
+
 ---
 
 ## Algorithm
@@ -242,6 +280,9 @@ below threshold) are reported as +0.000 Hz.
 --carrier-hint   Approximate carrier offset from center [Hz]
 --hint-bw        Half-bandwidth around --carrier-hint [Hz]        [default: 50000]
 --no-excl-sidebands  Do not exclude PCM/PM/NRZ sideband regions
+--oqpsk          OQPSK/BPSK suppressed-carrier mode (IQ^4 /4)
+--auto           Auto-detect modulation per block: carrier CW first,
+                 fall back to OQPSK if SNR too low
 --max-samples    Load only first N samples (for testing)
 --freq           Override center frequency [Hz]
 --rate           Override sample rate [Sps]

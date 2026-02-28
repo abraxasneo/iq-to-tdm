@@ -475,6 +475,7 @@ def process_iq(
     excl_sidebands  = True,
     interactive     = True,
     oqpsk           = False,
+    auto            = False,
 ):
     """
     Przesuwa okno integracji i zbiera pomiary częstotliwości nośnej.
@@ -509,7 +510,12 @@ def process_iq(
     if carrier_hint is not None:
         print(f"  Carrier hint     : {carrier_hint:+.0f} Hz od center")
     print(f"  Wyklucz sidebands: {'TAK' if excl_sidebands else 'NIE'}")
-    print(f"  Tryb OQPSK       : {'TAK (IQ^4, /4)' if oqpsk else 'NIE'}")
+    if auto:
+        print(f"  Tryb             : AUTO (nośna → OQPSK fallback)")
+    elif oqpsk:
+        print(f"  Tryb             : OQPSK (IQ^4, /4)")
+    else:
+        print(f"  Tryb             : carrier (Welch)")
     print(f"  Bloków            : {n_blocks}")
     print(f"{'='*64}")
 
@@ -517,6 +523,8 @@ def process_iq(
     skipped = 0
     rejected_snrs = []   # SNR odrzuconych bloków (poniżej progu)
     probe_raw = []       # (t, freq_abs, snr) – wszystkie bloki fazy próbkowania
+    n_carrier_mode = 0   # bloki wykryte przez nośną (auto)
+    n_oqpsk_mode   = 0   # bloki wykryte przez OQPSK (auto)
 
     use_tty = interactive and sys.stdout.isatty() and sys.stdin.isatty()
     probe_n = min(20, max(10, n_blocks // 10))
@@ -530,13 +538,36 @@ def process_iq(
         t = start_time + timedelta(seconds=(i + 1) * integration_sec)
 
         try:
-            freq_abs, snr = estimate_carrier(
-                block, sample_rate, center_freq,
-                fft_size=eff_fft, n_sub=n_welch_sub,
-                search_bw=search_bw, carrier_hint=carrier_hint,
-                hint_bw=hint_bw, excl_sidebands=excl_sidebands,
-                oqpsk=oqpsk,
-            )
+            if auto:
+                # Próba 1: szukaj nośnej
+                freq_abs, snr = estimate_carrier(
+                    block, sample_rate, center_freq,
+                    fft_size=eff_fft, n_sub=n_welch_sub,
+                    search_bw=search_bw, carrier_hint=carrier_hint,
+                    hint_bw=hint_bw, excl_sidebands=excl_sidebands,
+                    oqpsk=False,
+                )
+                block_mode = 'C'
+                if snr < min_snr_db:
+                    # Próba 2: OQPSK (IQ^4) — wyższy próg SNR żeby uniknąć fałszywych detekcji
+                    freq_q, snr_q = estimate_carrier(
+                        block, sample_rate, center_freq,
+                        fft_size=eff_fft, n_sub=n_welch_sub,
+                        search_bw=search_bw, carrier_hint=carrier_hint,
+                        hint_bw=hint_bw, excl_sidebands=False,
+                        oqpsk=True,
+                    )
+                    if snr_q >= min_snr_db + 2.0:   # +2 dB margines dla OQPSK
+                        freq_abs, snr, block_mode = freq_q, snr_q, 'Q'
+            else:
+                freq_abs, snr = estimate_carrier(
+                    block, sample_rate, center_freq,
+                    fft_size=eff_fft, n_sub=n_welch_sub,
+                    search_bw=search_bw, carrier_hint=carrier_hint,
+                    hint_bw=hint_bw, excl_sidebands=excl_sidebands,
+                    oqpsk=oqpsk,
+                )
+                block_mode = 'Q' if oqpsk else 'C'
         except Exception as e:
             if use_tty:
                 print(f"\r  [ERR] blok {i+1:4d}: {e}     ")
@@ -550,6 +581,10 @@ def process_iq(
 
         if accepted:
             measurements.append((t, freq_abs, snr))
+            if block_mode == 'C':
+                n_carrier_mode += 1
+            else:
+                n_oqpsk_mode += 1
         else:
             skipped += 1
             rejected_snrs.append(snr)
@@ -578,9 +613,10 @@ def process_iq(
                   end='', flush=True)
         else:
             # Nie-TTY: linie co jakiś czas (zachowane oryginalne zachowanie)
+            mode_tag = f'[{block_mode}]' if auto else '[OK]'
             if accepted:
                 if len(measurements) <= 5 or (i+1) % 30 == 0 or i == n_blocks-1:
-                    print(f"  [OK]  {i+1:4d}/{n_blocks}  {_dt_to_tdm(t)}  "
+                    print(f"  {mode_tag}  {i+1:4d}/{n_blocks}  {_dt_to_tdm(t)}  "
                           f"offset={offset:+10.2f} Hz  SNR={snr:5.1f} dB")
             else:
                 if len(rejected_snrs) <= 3 or (i+1) % 60 == 0:
@@ -625,6 +661,8 @@ def process_iq(
               f"drift={max(offsets)-min(offsets):.1f} Hz")
         print(f"  SNR           : min={min(snrs):.1f}  max={max(snrs):.1f}  "
               f"sred={sum(snrs)/len(snrs):.1f} dB")
+        if auto:
+            print(f"  Tryby detekcji: carrier={n_carrier_mode}  OQPSK={n_oqpsk_mode}")
 
     return measurements
 
@@ -808,6 +846,13 @@ def build_parser():
                        "usuwa modulację QPSK i ujawnia nośną jako CW na 4×Δf. "
                        "Wynik dzielony przez 4. Użyj z --no-excl-sidebands."
                    ))
+    p.add_argument("--auto", action="store_true",
+                   help=(
+                       "Auto-detekcja modulacji. Dla każdego bloku próbuje najpierw "
+                       "wykryć nośną CW (KPLO, LRO, Artemis I), a jeśli SNR za niski — "
+                       "przełącza na tryb OQPSK IQ^4 (Artemis II). "
+                       "Przydatne gdy nie wiadomo jakiego sygnału się spodziewać."
+                   ))
     p.add_argument("--max-samples",  type=int,  default=None,
                    help="Max probek do zaladowania (do testow na duzych plikach)")
     p.add_argument("--output",  "-o", default=None, help="Plik wyjsciowy TDM")
@@ -904,6 +949,7 @@ def main():
         excl_sidebands  = not args.no_excl_sidebands,
         interactive     = not args.no_interactive,
         oqpsk           = args.oqpsk,
+        auto            = args.auto,
     )
 
     if not meas:
