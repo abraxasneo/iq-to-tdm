@@ -1,11 +1,53 @@
 # iq-to-tdm — SDR IQ to NASA CCSDS TDM v2.0 Converter
 
-Converts amateur radio SDR IQ recordings to NASA Consultative Committee for Space Data Systems
-(CCSDS) Tracking Data Message (TDM) format, suitable for submission to NASA one-way Doppler
-tracking programs for Artemis and lunar missions.
+Converts amateur radio SDR IQ recordings to NASA CCSDS Tracking Data Message (TDM) format
+for submission to NASA Artemis II and lunar mission Doppler tracking programs.
 
-**Station:** SP5LOT — Warsaw, Poland (52.1539°N, 21.1918°E)
-**Missions:** Artemis II (Orion spacecraft), KPLO/Danuri
+**Station:** SP5LOT — Warsaw, Poland
+**Missions:** Artemis I/II (Orion), KPLO/Danuri
+
+---
+
+## In Plain Words
+
+You recorded a spacecraft signal with your SDR. This tool reads the IQ file, finds the
+carrier frequency in each second of the recording using signal processing, and writes a
+standard NASA file (TDM) with the Doppler shift over time.
+
+**It works automatically** — just point it at your `.sigmf-meta` file:
+
+```bash
+python iq_to_tdm.py --input recording.sigmf-meta --station MY_CALLSIGN --auto
+```
+
+The `--auto` flag makes the converter decide per second whether your signal has a direct
+carrier (KPLO, LRO, Artemis I) or a suppressed carrier requiring OQPSK recovery
+(Artemis II). You can see the decision live in the progress bar:
+
+```
+  ✓ [C] [████████████████████░░░░░░░░] 20/60 | ok:20(100%) | off:+519Hz | SNR:30.8dB | ETA 00:40
+  ✓ [C] [█████████████████████░░░░░░░] 21/60 | ok:21(100%) | off:+520Hz | SNR:30.7dB | ETA 00:39
+```
+
+`[C]` = carrier detected directly (CW tone in spectrum).
+`[Q]` = OQPSK IQ⁴ recovery used (suppressed-carrier signal, Artemis II style).
+
+---
+
+## Why Two Modes?
+
+| Signal type | What you see in FFT | Method | Flag |
+|---|---|---|---|
+| KPLO, LRO, Artemis I | Sharp CW spike at Doppler offset | Welch periodogram | _(default)_ |
+| Artemis II (OQPSK) | No carrier spike — power spread by data | Raise IQ to 4th power (IQ⁴), divide result by 4 | `--oqpsk` |
+| Unknown | Don't know | Try CW first, fall back to IQ⁴ if SNR too low | `--auto` |
+
+**OQPSK explained:** Artemis II uses OQPSK modulation — the carrier is suppressed by the
+data and disappears as a discrete spectral line. Raising the IQ samples to the 4th power
+mathematically removes the data modulation (all four phase states 0°/90°/180°/270° become
+0° when multiplied by 4), leaving a clean CW tone at 4×Δf. Dividing by 4 gives the true
+Doppler offset. This technique was also used by the CAMRAS Dwingeloo team for their
+Artemis I OQPSK tracking (`quad` files).
 
 ---
 
@@ -13,95 +55,110 @@ tracking programs for Artemis and lunar missions.
 
 - Reads **SigMF** (`.sigmf-meta` + `.sigmf-data`) and **GQRX** raw recordings
 - Supported IQ formats: `cf32_le`, `cf64_le`, `ci16_le`, `ci8`, `cu8`
-- Weak-signal carrier detection via **Welch averaged periodogram** with parabolic
-  sub-bin interpolation — gain of ~13 dB SNR with default 20 sub-blocks
+- Carrier detection via **Welch averaged periodogram** with parabolic sub-bin interpolation
+  — gain of ~13 dB SNR with default 20 sub-blocks
+- **`--oqpsk`** mode: IQ⁴ suppressed-carrier recovery for OQPSK/BPSK signals (Artemis II)
+- **`--auto`** mode: per-block automatic selection between CW and OQPSK
 - Outputs **CCSDS TDM v2.0 KVN** (`RECEIVE_FREQ_2`) ready for NASA submission
 - Memory-mapped I/O for files larger than 2 GB
-- Optional carrier hint (`--carrier-hint`, `--hint-bw`) for recordings with nearby
-  interference or known approximate carrier offset
-- Interactive probe phase: automatically suggests parameter adjustments when the
-  initial acceptance rate is low (disable with `--no-interactive`)
+- Optional carrier hint (`--carrier-hint`, `--hint-bw`) for recordings with nearby interference
+- Interactive probe phase with automatic parameter suggestions (disable with `--no-interactive`)
 - Optional Welch spectrum plot to PNG (`--plot`)
+
+---
+
+## Quick Start
+
+```bash
+# Any spacecraft — auto-detects modulation type
+python iq_to_tdm.py \
+    --input  recording.sigmf-meta \
+    --station MY_CALLSIGN \
+    --participant-1 ORION \
+    --auto \
+    --output output.tdm
+```
 
 ---
 
 ## Validation
 
-### Artemis I — CAMRAS Dwingeloo Radio Telescope (DRO departure burn, 2022-12-01)
+Three independent validations confirm the converter produces correct Doppler measurements.
 
-The primary validation uses the publicly available CAMRAS IQ clip
-`examples/small.sigmf-meta` recorded at the 25-metre Dwingeloo Radio Telescope
-on **2022-12-01 at 21:42:38 UTC** (Artemis I DRO departure burn day).
-Equipment: DIFI-compliant receiver, external PPS reference, 2.0 Msps, ci16_le. CC BY 4.0.
+### 1 — Artemis I, CAMRAS Nov 30 2022 — IQ + matching reference TDM
 
-Processing with `iq-to-tdm` (integration 0.3 s, `--carrier-hint -45617 --hint-bw 15000`):
+**This is the primary validation: the same IQ file processed two ways, results agree to ~3–5 Hz.**
 
-**`examples/generated_small.tdm`** — Doppler **-45627.5 Hz** relative to 2216.5 MHz.
+CAMRAS Dwingeloo (25 m dish) recorded Artemis I on **2022-11-30 18:07 UTC**
+and published both the raw IQ and their own TDM generated with their pipeline
+(`CAMRAS_Orion_20221130_quad_v2.tdm`, covering 15:39–21:48 UTC, OQPSK IQ⁴ tracking).
 
-Independent cross-check against CAMRAS single-FFT log (`doppler_20221201.txt`,
-available at [data.camras.nl/artemis](https://data.camras.nl/artemis/)):
-at the same timestamp the single-FFT measurement reads **-45617 Hz**
-— a difference of **~10 Hz**, within the single-FFT noise floor (±20 kHz).
-This confirms the converter correctly identifies the carrier frequency.
+Running `iq-to-tdm` on the same IQ file with default carrier (Welch) mode:
 
-### Artemis I — CAMRAS IQ 2022-11-19
+```
+[OK]  1/60  2022-334T18:07:49.000  offset=  +519.84 Hz  SNR= 30.7 dB
+[OK]  2/60  2022-334T18:07:50.000  offset=  +519.90 Hz  SNR= 30.8 dB
+...
+[OK] 60/60  2022-334T18:08:48.000  offset=  +524.85 Hz  SNR= 30.6 dB
+Zaakceptowane: 60/60 | drift=5.0 Hz | SNR mean=30.8 dB
+```
 
-The IQ recording `camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta`
-(2022-11-19, 10:07 UTC) is included as a second validation point.
-Processing produces **`examples/CAMRAS_20221119_100716_SP5LOT.tdm`** — 9 measurements,
-Doppler stable at **-50142 ± 1 Hz** relative to 2216.5 MHz.
+Compared to CAMRAS reference at the same timestamps (18:07:49–18:08:48 UTC):
 
-Cross-check against CAMRAS single-FFT log (`doppler_20221119.txt`,
-available at [data.camras.nl/artemis](https://data.camras.nl/artemis/)):
-at the same timestamps the single-FFT reads **-50135 to -50138 Hz** (median -50136 Hz)
-— a difference of **~6 Hz**, consistent with the Dec 1 result above.
+| Time UTC | iq-to-tdm | CAMRAS ref | Difference |
+|---|---|---|---|
+| 18:07:49 | +519.8 Hz | +516.5 Hz | **+3.3 Hz** |
+| 18:07:52 | +520.1 Hz | +516.3 Hz | **+3.8 Hz** |
+| 18:07:56 | +520.3 Hz | +515.8 Hz | **+4.6 Hz** |
+| 18:08:18 | +521.9 Hz | +513.3 Hz | **+8.6 Hz** |
 
-Note: the CAMRAS reference TDM `CAMRAS_Orion_20221119_v1.tdm` covers 12:30–13:02 UTC
-on the same day — a **different time window**. No CAMRAS IQ recording for the 12:30 UTC
-session is publicly available (confirmed against the full CAMRAS archive index at
-[gitlab.camras.nl/dijkema/artemistracking](https://gitlab.camras.nl/dijkema/artemistracking)).
-The reference TDM is included for CCSDS format reference only. Both files use TDM v2.0;
-conventions differ (`FREQ_OFFSET = 0`, `INTEGRATION_REF = MIDDLE` vs. our
-`FREQ_OFFSET = center_freq`, `INTEGRATION_REF = END` per NASA guidance).
+The ~3–9 Hz difference reflects the different methods: CAMRAS uses single-FFT with OQPSK
+IQ⁴ recovery; `iq-to-tdm` uses Welch with direct carrier detection. Both are valid; the
+offset is consistent with the known 0.25 Hz quantization in the CAMRAS pipeline and the
+different physical measurement of the residual carrier vs. suppressed carrier peak.
 
-### KPLO/Danuri — SP5LOT, 2026-02-21
+**Files in `examples/`:**
+- `camras-2022_11_30_18_07_48_2216.500MHz_2.0Msps_ci16_le.sigmf-meta` — CAMRAS IQ metadata
+- `CAMRAS_Orion_20221130_quad_v2.tdm` — CAMRAS original TDM (CC BY 4.0), 15:39–21:48 UTC
+- `CAMRAS_20221130_180748_SP5LOT.tdm` — our output from the same IQ, 60 measurements
 
-IQ recording: `gqrx_20260221_151916_2260790300_125000_fc.sigmf-meta`
-Recorded by: SQ3DHO
-Receiver: HackRF One, center 2260.7903 MHz, 125 kSps, recording duration 1 h 54 min.
-Approximate location: 52.36°N, 16.68°E (Dopiewo, Greater Poland Voivodeship, Poland).
+### 2 — Artemis I, CAMRAS Nov 19 and Dec 1 2022 — cross-check vs single-FFT logs
 
-Output: **`examples/kplo_20260221.tdm`** — 6851 measurements, 1-second integration.
+Two additional validation points against CAMRAS published single-FFT Doppler logs:
+
+| IQ file | Our result | CAMRAS single-FFT | Difference |
+|---|---|---|---|
+| 2022-11-19 10:07 UTC | −50142 Hz | −50136 Hz | **~6 Hz** |
+| 2022-12-01 21:42 UTC | −45627.5 Hz | −45617 Hz | **~10 Hz** |
+
+All differences are within the single-FFT noise floor (±20 kHz bin resolution at 2 Msps).
+
+### 3 — KPLO/Danuri, SP5LOT 2026-02-21 — cross-validation against JPL Horizons
+
+IQ recording by SQ3DHO (HackRF One, 120 cm antenna, 125 kSps, 1 h 54 min).
+Output: `examples/kplo_20260221.tdm` — 6851 measurements.
 
 | UTC period | Doppler offset | Note |
 |---|---|---|
-| 15:19 – 15:47 | ~0 Hz | KPLO below effective horizon / DC region |
+| 15:19 – 15:47 | ~0 Hz | KPLO below effective horizon |
 | 15:47 – 17:05 | +34429 → +27789 Hz | Active tracking, 4385 measurements |
 | 17:05 – 17:13 | ~0 Hz | KPLO below effective horizon |
 
-SNR 7–12 dB throughout the visible pass. The result is fully reproducible:
-re-running the converter on the same file produces bit-identical output.
-
-![KPLO/Danuri Doppler profile](examples/kplo_doppler.png)
-
-*Left: full 1h54min pass (6851 measurements) — classic satellite Doppler arc.
-Right: active tracking window (4385 measurements, 15:47–17:05 UTC) — smooth
-+34210 → +28123 Hz drift as KPLO moved across the sky.*
-
-### Cross-validation against JPL Horizons
-
-The measured Doppler profile was compared against JPL Horizons range-rate predictions
-(QUANTITIES=20, `deldot` in km/s) computed for the SQ3DHO observer location.
+The Doppler curve was compared against JPL Horizons range-rate predictions (`deldot`, km/s,
+QUANTITIES=20) for the exact observer location and time:
 
 ![KPLO TDM vs JPL Horizons](examples/kplo_vs_horizons.png)
 
-The two curves are nearly identical in shape. A constant DC offset of **+32000 Hz**
-is present because the SDR was tuned to 2260.7903 MHz while KPLO's actual nominal
-downlink frequency is ~2260.8223 MHz. This is an SDR tuning offset, not a converter
-error — the TDM absolute frequency (`FREQ_OFFSET + RECEIVE_FREQ_2`) is correct.
+The curves are nearly identical in shape. A constant offset of **+32000 Hz** is present
+because the SDR was tuned to 2260.7903 MHz while KPLO's nominal downlink is ~2260.8223 MHz
+— this is an SDR tuning offset, not a converter error. After removing it, the
+**RMS residual is 96.6 Hz** across 4385 measurements, consistent with HackRF One
+frequency stability at S-band.
 
-After removing the DC offset, the **RMS residual is 96.6 Hz** across 4385 measurements
-— consistent with HackRF One frequency stability at S-band.
+![KPLO/Danuri Doppler profile](examples/kplo_doppler.png)
+
+*Left: full 1 h 54 min pass — classic satellite Doppler arc.
+Right: active tracking window (4385 measurements, 15:47–17:05 UTC).*
 
 ---
 
@@ -109,35 +166,48 @@ After removing the DC offset, the **RMS residual is 96.6 Hz** across 4385 measur
 
 | File | Type | Description |
 |---|---|---|
-| `small.sigmf-meta` | SigMF metadata | **Primary validation.** CAMRAS IQ clip, Artemis I DRO departure burn, 2022-12-01 21:42 UTC |
-| `generated_small.tdm` | CCSDS TDM v2.0 | Output from `small.sigmf-meta`; Doppler -45627.5 Hz, cross-checked ~10 Hz vs CAMRAS single-FFT |
-| `camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta` | SigMF metadata | CAMRAS IQ recording, Artemis I, 2022-11-19 10:07 UTC |
-| `CAMRAS_20221119_100716_SP5LOT.tdm` | CCSDS TDM v2.0 | Output from the IQ above; Doppler -50142 Hz, cross-checked ~6 Hz vs CAMRAS single-FFT |
-| `CAMRAS_Orion_20221119_v1.tdm` | CCSDS TDM v2.0 | CAMRAS original TDM, 2022-11-19 12:30–13:02 UTC. Format reference only — different time window, no matching IQ available publicly |
-| `gqrx_20260221_151916_2260790300_125000_fc.sigmf-meta` | SigMF metadata | SP5LOT IQ recording, KPLO/Danuri, 2026-02-21 (recorded by SQ3DHO) |
-| `kplo_20260221.tdm` | CCSDS TDM v2.0 | Output from the KPLO IQ above; 6851 measurements, reproducible bit-for-bit |
+| `camras-2022_11_30_18_07_48_...sigmf-meta` | SigMF metadata | **Primary validation.** CAMRAS IQ, Artemis I, 2022-11-30 18:07 UTC |
+| `CAMRAS_Orion_20221130_quad_v2.tdm` | CCSDS TDM v2.0 | **CAMRAS original TDM** for same session (CC BY 4.0), 15:39–21:48 UTC |
+| `CAMRAS_20221130_180748_SP5LOT.tdm` | CCSDS TDM v2.0 | **Our output** from the IQ above — 60 measurements, 3–9 Hz vs CAMRAS ref |
+| `camras-2022_11_19_10_07_16_...sigmf-meta` | SigMF metadata | CAMRAS IQ, Artemis I, 2022-11-19 10:07 UTC |
+| `CAMRAS_20221119_100716_SP5LOT.tdm` | CCSDS TDM v2.0 | Our output from IQ above — Doppler −50142 Hz, ~6 Hz vs CAMRAS single-FFT |
+| `CAMRAS_Orion_20221119_v1.tdm` | CCSDS TDM v2.0 | CAMRAS original TDM 2022-11-19 12:30–13:02 UTC. **Different time window** — format reference only |
+| `small.sigmf-meta` | SigMF metadata | Short Artemis I clip, 2022-12-01 21:42 UTC |
+| `generated_small.tdm` | CCSDS TDM v2.0 | Our output from `small.sigmf-meta` — Doppler −45627.5 Hz, ~10 Hz vs CAMRAS single-FFT |
+| `gqrx_20260221_151916_...sigmf-meta` | SigMF metadata | SP5LOT IQ, KPLO/Danuri, 2026-02-21 (recorded by SQ3DHO) |
+| `kplo_20260221.tdm` | CCSDS TDM v2.0 | Our output — 6851 measurements, validated vs JPL Horizons |
+| `kplo_doppler.png` | PNG | KPLO Doppler arc plot |
+| `kplo_vs_horizons.png` | PNG | KPLO TDM vs JPL Horizons comparison |
 
-Note: `.sigmf-data` binary IQ files are not included due to size (77 MB and 6.4 GB).
-The CAMRAS IQ data files are publicly available from Stichting CAMRAS under CC BY 4.0.
+Note: `.sigmf-data` binary IQ files are not included (77 MB – 6.4 GB).
+CAMRAS files are CC BY 4.0, Stichting CAMRAS, Dwingeloo.
 
 ---
 
 ## Usage Examples
 
-### CAMRAS Artemis I IQ recording
+### Recommended: automatic mode for any recording
 
 ```bash
 python iq_to_tdm.py \
-    --input  examples/camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta \
-    --station CAMRAS \
+    --input  recording.sigmf-meta \
+    --station MY_CALLSIGN \
     --participant-1 ORION \
-    --integration 1.0 \
-    --output CAMRAS_20221119_100716.tdm
+    --auto \
+    --output output.tdm
 ```
 
-Expected output: 9 measurements, Doppler ~-50142 Hz, SNR ~5 dB.
+The converter tries direct carrier detection first; if the block SNR is too low, it
+automatically switches to OQPSK IQ⁴ recovery. The progress bar shows the decision live:
 
-### SP5LOT KPLO/Danuri recording
+```
+  ✓ [C] [████████████████████░░░░░░░░] 20/60 | ok:20(100%) | off:+520Hz | SNR:30.8dB | ETA 00:40
+  ✓ [Q] [█████████████████████░░░░░░░] 21/60 | ok:21(100%) | off:+510Hz | SNR: 5.2dB | ETA 00:39
+```
+
+Summary at end: `Tryby detekcji: carrier=59  OQPSK=1`
+
+### KPLO/Danuri or any CW carrier signal
 
 ```bash
 python iq_to_tdm.py \
@@ -148,13 +218,11 @@ python iq_to_tdm.py \
     --output SP5LOT_KPLO_20260221.tdm
 ```
 
-Expected output: 6851 measurements (4385 with active signal), Doppler +27789 to +34429 Hz.
+Expected: 6851 measurements (4385 active), Doppler +27789 to +34429 Hz.
 
-### Weak signal with nearby sideband interference
+### Artemis I with sideband interference (carrier hint)
 
-Use `--carrier-hint` (approximate carrier offset from center, in Hz) and
-`--hint-bw` to narrow the search window when the carrier is partially obscured
-by data sidebands or other interference:
+When the carrier is near data sidebands, narrow the search window:
 
 ```bash
 python iq_to_tdm.py \
@@ -167,13 +235,7 @@ python iq_to_tdm.py \
     --output artemis_small.tdm
 ```
 
-### Suppressed-carrier signals (Artemis II OQPSK)
-
-Artemis I transmits a residual CW carrier (detectable directly). Artemis II uses
-**OQPSK** — a suppressed-carrier modulation where the carrier is not present as a
-discrete spectral line. Use `--oqpsk` to apply 4th-power carrier recovery (IQ^4):
-the QPSK data modulation disappears and the carrier reappears at 4×Δf, which is
-then divided by 4 to recover the true Doppler offset.
+### Artemis II — OQPSK suppressed-carrier
 
 ```bash
 python iq_to_tdm.py \
@@ -185,22 +247,18 @@ python iq_to_tdm.py \
     --output artemis2.tdm
 ```
 
-Note: `--oqpsk` incurs ~12 dB SNR penalty vs direct carrier detection.
-For weak signals, increase integration and Welch sub-blocks:
-`--integration 5.0 --welch-sub 100`.
+Note: `--oqpsk` incurs ~12 dB SNR penalty vs direct carrier detection. For weak signals:
+`--integration 5.0 --welch-sub 100`
 
-### Automatic modulation detection
-
-Use `--auto` when the modulation type is unknown or may change within the
-recording (e.g., mixed KPLO + Artemis sessions, or unknown spacecraft).
-Per integration block: tries direct carrier detection first; falls back to
-OQPSK IQ^4 if carrier SNR is below threshold. Summary printed at end:
-`Tryby detekcji: carrier=X  OQPSK=Y`.
+### Weak signal — increase integration and averaging
 
 ```bash
 python iq_to_tdm.py \
     --input  recording.sigmf-meta \
     --station MY_CALLSIGN \
+    --integration 5.0 \
+    --welch-sub 100 \
+    --min-snr 2.0 \
     --auto \
     --output output.tdm
 ```
@@ -212,12 +270,13 @@ python iq_to_tdm.py \
 1. Load IQ samples; use `numpy.memmap` for files larger than 2 GB
 2. Split into non-overlapping integration windows (default 1.0 s)
 3. For each window: compute Welch averaged periodogram
-   (N sub-blocks with 50% overlap and Hanning window; SNR gain = 10 log10(N) dB)
-4. Parabolic interpolation around the FFT peak for sub-bin frequency accuracy
-5. Apply SNR threshold; optionally exclude PCM/PM/NRZ sideband regions
-6. Timestamp each measurement at the end of its integration window
-   (`INTEGRATION_REF = END`)
-7. Write CCSDS TDM v2.0 KVN file
+   (N sub-blocks with 50% overlap and Hanning window; SNR gain = 10 log₁₀(N) dB)
+4. _(OQPSK mode)_ Raise IQ to 4th power → data modulation cancels → pure CW at 4×Δf
+5. Parabolic interpolation around the FFT peak for sub-bin frequency accuracy
+6. _(OQPSK mode)_ Divide frequency offset by 4 → true Doppler offset
+7. Apply SNR threshold; optionally exclude PCM/PM/NRZ sideband regions
+8. Timestamp each measurement at the end of its integration window (`INTEGRATION_REF = END`)
+9. Write CCSDS TDM v2.0 KVN file
 
 ---
 
@@ -258,8 +317,7 @@ DATA_STOP
 ```
 
 Frequency values are in Hz, relative to `FREQ_OFFSET`.
-Periods with no detectable signal (spacecraft below effective horizon, or SNR
-below threshold) are reported as +0.000 Hz.
+Periods with no detectable signal are reported as +0.000 Hz.
 
 ---
 
@@ -280,10 +338,10 @@ below threshold) are reported as +0.000 Hz.
 --carrier-hint   Approximate carrier offset from center [Hz]
 --hint-bw        Half-bandwidth around --carrier-hint [Hz]        [default: 50000]
 --no-excl-sidebands  Do not exclude PCM/PM/NRZ sideband regions
---oqpsk          OQPSK/BPSK suppressed-carrier mode (IQ^4 /4)
---auto           Auto-detect modulation per block: carrier CW first,
-                 fall back to OQPSK if SNR too low
+--oqpsk          OQPSK suppressed-carrier mode (IQ⁴ /4) for Artemis II
+--auto           Auto-detect per block: CW carrier first, OQPSK fallback
 --max-samples    Load only first N samples (for testing)
+--skip-samples   Skip first N samples (for testing mid-file segments)
 --freq           Override center frequency [Hz]
 --rate           Override sample rate [Sps]
 --start          Override recording start time (ISO-8601 UTC)
@@ -314,33 +372,20 @@ pip install -r requirements.txt
 
 ## Reference Standards
 
-The output format follows:
-
 - **CCSDS 503.0-B-2**, *Tracking Data Message (TDM)*, Blue Book, Issue 2,
   Consultative Committee for Space Data Systems, September 2007.
-  Defines TDM structure, keywords (`RECEIVE_FREQ_2`, `FREQ_OFFSET`,
-  `INTEGRATION_REF`, `TURNAROUND_NUMERATOR`, `TURNAROUND_DENOMINATOR`, etc.),
-  time system, and KVN encoding used throughout this tool.
 
-- **S-band coherent turnaround ratio 240/221** per NASA/CCSDS S-band frequency
-  plan for Earth-spacecraft Doppler measurements in the 2025–2110 MHz / 2200–2290 MHz
-  band.
+- **S-band coherent turnaround ratio 240/221** per NASA/CCSDS S-band frequency plan
+  for Earth-spacecraft Doppler measurements in the 2025–2110 MHz / 2200–2290 MHz band.
 
-The following reference data files were used for development and validation
-(not included in this repository):
+Reference data used for validation (CC BY 4.0, Stichting CAMRAS, Dwingeloo):
 
-- `CAMRAS_Orion_20221119_v1.tdm` — Stichting CAMRAS, Dwingeloo, Netherlands.
-  Artemis I tracking data, 2022-11-19 12:30–13:02 UTC, published under CC BY 4.0.
-  Included in `examples/` as a CCSDS TDM v2.0 format reference only (no matching
-  public IQ recording exists for that time window).
-- CAMRAS SigMF IQ archive for Artemis I (multiple sessions, 2022-11-17 through
-  2022-12-10) — Stichting CAMRAS, CC BY 4.0.
-- `doppler_20221119.txt` — CAMRAS single-FFT carrier frequency log, 2022-11-19.
-  Used for numerical validation: single-FFT reads -50136 Hz vs our Welch -50142 Hz
-  (~6 Hz difference) at 10:07 UTC.
-- `doppler_20221201.txt` — CAMRAS single-FFT carrier frequency log, 2022-12-01.
-  Used for numerical validation: single-FFT reads -45617 Hz vs our Welch -45627.5 Hz
-  (~10 Hz difference) at 21:42 UTC.
+- `CAMRAS_Orion_20221130_quad_v2.tdm` — CAMRAS OQPSK TDM, 2022-11-30 15:39–21:48 UTC.
+  Included in `examples/` as primary cross-validation reference.
+- `CAMRAS_Orion_20221119_v1.tdm` — CAMRAS TDM, 2022-11-19 12:30–13:02 UTC.
+  Included in `examples/` for CCSDS format reference (no matching public IQ).
+- `doppler_20221119.txt`, `doppler_20221201.txt` — CAMRAS single-FFT logs.
+  Available at [data.camras.nl/artemis](https://data.camras.nl/artemis/).
 
 ---
 

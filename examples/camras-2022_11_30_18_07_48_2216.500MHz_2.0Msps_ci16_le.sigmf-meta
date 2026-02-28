@@ -1,0 +1,47 @@
+{
+    "global": {
+        "core:version": "1.0.0",
+        "core:recorder": "difi_to_sigmf",
+        "core:sample_rate": 2000000,
+        "core:datatype": "ci16_le",
+        "difi:rx_gain": 40,
+        "difi:bandwidth": 56000000,
+        "difi:reference": "external",
+        "difi:time_source": "pps",
+        "difi:stream_id": 1804289383,
+        "core:description": "Artemis I",
+        "core:author": "Stichting CAMRAS",
+        "core:geolocation": [
+            {
+                "type": "Point",
+                "coordinates": [
+                    6.3961694,
+                    52.8120194,
+                    60.0
+                ]
+            }
+        ],
+        "core:license": "https://creativecommons.org/licenses/by/4.0/",
+        "camras:pointing:source": "DT console",
+        "camras:pointing:tracking": "console/j2000tracker",
+        "camras:pointing:az_deg": 192.4237,
+        "camras:pointing:el_deg": 19.0434,
+        "camras:pointing:offset:az_deg": 0.0,
+        "camras:pointing:offset:el_deg": 0.0,
+        "camras:focusbox_position_m": 4.527,
+        "camras:pointing:datetime": "2022-11-30T18:08:50.527421",
+        "camras:tracking_script": "track_horizons.py",
+        "camras:tracking_script_args": "Orion: Orion_OEM_20221117_1600_V0.1",
+        "camras:pointing:model_enabled": "True",
+        "camras:pointing:model": "sband-2021-09",
+        "camras:pointing:refraction_enabled": "True"
+    },
+    "annotations": [],
+    "captures": [
+        {
+            "core:sample_start": 0,
+            "core:frequency": 2216500000,
+            "core:datetime": "2022-11-30T18:07:48.000019"
+        }
+    ]
+}
