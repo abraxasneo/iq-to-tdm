@@ -218,6 +218,18 @@ python iq_to_tdm.py \
     --output SP5LOT_KPLO_20260221.tdm
 ```
 
+Progress bar (default CW mode):
+```
+  ✓ [████████████████████░░░░░░░░] 20/24 | ok:20(100%) | off:+34229Hz | SNR:8.2dB | ETA 00:04
+  ✓ [█████████████████████░░░░░░░] 21/24 | ok:21(100%) | off:+34225Hz | SNR:8.1dB | ETA 00:03
+```
+
+With `--auto` (shows detection mode per block):
+```
+  ✓ [C] [████████████████████░░░░░░░░] 20/24 | ok:20(100%) | off:+34229Hz | SNR:8.2dB | ETA 00:04
+  ✓ [C] [█████████████████████░░░░░░░] 21/24 | ok:21(100%) | off:+34225Hz | SNR:8.1dB | ETA 00:03
+```
+
 Expected: 6851 measurements (4385 active), Doppler +27789 to +34429 Hz.
 
 ### Artemis I with sideband interference (carrier hint)
