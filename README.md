@@ -205,7 +205,7 @@ automatically switches to OQPSK IQ⁴ recovery. The progress bar shows the decis
   ✓ [Q] [█████████████████████░░░░░░░] 21/60 | ok:21(100%) | off:+510Hz | SNR: 5.2dB | ETA 00:39
 ```
 
-Summary at end: `Tryby detekcji: carrier=59  OQPSK=1`
+Summary at end: `Detection modes: carrier=59  OQPSK=1`
 
 ### KPLO/Danuri or any CW carrier signal
 
