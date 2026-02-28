@@ -44,21 +44,25 @@ at the same timestamp the single-FFT measurement reads **-45617 Hz**
 — a difference of **~10 Hz**, within the single-FFT noise floor (±20 kHz).
 This confirms the converter correctly identifies the carrier frequency.
 
-### Artemis I — CAMRAS IQ 2022-11-19, format reference only
+### Artemis I — CAMRAS IQ 2022-11-19
 
 The IQ recording `camras-2022_11_19_10_07_16_2216.500MHz_2.0Msps_ci16_le.sigmf-meta`
-(2022-11-19, 10:07 UTC) is included as a format and processing example.
+(2022-11-19, 10:07 UTC) is included as a second validation point.
 Processing produces **`examples/CAMRAS_20221119_100716_SP5LOT.tdm`** — 9 measurements,
-Doppler stable at **-50142 ± 1 Hz**.
+Doppler stable at **-50142 ± 1 Hz** relative to 2216.5 MHz.
+
+Cross-check against CAMRAS single-FFT log (`doppler_20221119.txt`,
+available at [data.camras.nl/artemis](https://data.camras.nl/artemis/)):
+at the same timestamps the single-FFT reads **-50135 to -50138 Hz** (median -50136 Hz)
+— a difference of **~6 Hz**, consistent with the Dec 1 result above.
 
 Note: the CAMRAS reference TDM `CAMRAS_Orion_20221119_v1.tdm` covers 12:30–13:02 UTC
 on the same day — a **different time window**. No CAMRAS IQ recording for the 12:30 UTC
 session is publicly available (confirmed against the full CAMRAS archive index at
-[gitlab.camras.nl/dijkema/artemistracking](https://gitlab.camras.nl/dijkema/artemistracking)),
-so direct numerical comparison is not possible. The reference TDM is included for
-CCSDS format reference only. Both files use TDM v2.0; conventions differ
-(`FREQ_OFFSET = 0`, `INTEGRATION_REF = MIDDLE` vs. our `FREQ_OFFSET = center_freq`,
-`INTEGRATION_REF = END` per NASA guidance).
+[gitlab.camras.nl/dijkema/artemistracking](https://gitlab.camras.nl/dijkema/artemistracking)).
+The reference TDM is included for CCSDS format reference only. Both files use TDM v2.0;
+conventions differ (`FREQ_OFFSET = 0`, `INTEGRATION_REF = MIDDLE` vs. our
+`FREQ_OFFSET = center_freq`, `INTEGRATION_REF = END` per NASA guidance).
 
 ### KPLO/Danuri — SP5LOT, 2026-02-21
 
