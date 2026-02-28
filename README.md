@@ -171,7 +171,7 @@ CCSDS_TDM_VERS = 2.0
 CREATION_DATE  = 2026-052T15:19:17.000Z
 ORIGINATOR     = SP5LOT
 
-COMMENT Artemis II one-way Doppler tracking
+COMMENT KPLO/Danuri one-way Doppler tracking
 COMMENT Source: gqrx_20260221_151916_2260790300_125000_fc.sigmf-meta
 COMMENT HW: HackRF One | FFT=65536 Welch=20 int=1.0s
 
@@ -268,13 +268,17 @@ The following reference data files were used for development and validation
 (not included in this repository):
 
 - `CAMRAS_Orion_20221119_v1.tdm` — Stichting CAMRAS, Dwingeloo, Netherlands.
-  Artemis I tracking data, 2022-11-19, published under CC BY 4.0.
-  (The file is also included in `examples/` for format reference.)
+  Artemis I tracking data, 2022-11-19 12:30–13:02 UTC, published under CC BY 4.0.
+  Included in `examples/` as a CCSDS TDM v2.0 format reference only (no matching
+  public IQ recording exists for that time window).
 - CAMRAS SigMF IQ archive for Artemis I (multiple sessions, 2022-11-17 through
   2022-12-10) — Stichting CAMRAS, CC BY 4.0.
-- `doppler_20221201.txt` — CAMRAS single-FFT carrier frequency log,
-  2022-12-01, used to determine the approximate carrier offset for
-  `--carrier-hint` parameter tuning.
+- `doppler_20221119.txt` — CAMRAS single-FFT carrier frequency log, 2022-11-19.
+  Used for numerical validation: single-FFT reads -50136 Hz vs our Welch -50142 Hz
+  (~6 Hz difference) at 10:07 UTC.
+- `doppler_20221201.txt` — CAMRAS single-FFT carrier frequency log, 2022-12-01.
+  Used for numerical validation: single-FFT reads -45617 Hz vs our Welch -45627.5 Hz
+  (~10 Hz difference) at 21:42 UTC.
 
 ---
 

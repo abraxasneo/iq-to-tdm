@@ -2,7 +2,7 @@ CCSDS_TDM_VERS = 2.0
 CREATION_DATE  = 2026-055T16:35:45.027Z
 ORIGINATOR     = SQ3DHO
 
-COMMENT Artemis II one-way Doppler tracking
+COMMENT KPLO/Danuri one-way Doppler tracking
 COMMENT Source: gqrx_20260221_151916_2260790300_125000_fc.sigmf-meta
 COMMENT HW: OsmoSDR: 'device=\'HackRF One\',driver=hackrf,part_id=a000cb3c00414765,serial=0000000000000000081c69dc309e8c1b,soapy=1,version=local-608c8c35' | FFT=65536 Welch=20 int=1.0s
 
