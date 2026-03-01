@@ -411,6 +411,14 @@ Reference data used for validation (CC BY 4.0, Stichting CAMRAS, Dwingeloo):
 
 ---
 
+## Related
+
+- [spacecraft-doppler-id](https://github.com/SP5LOT/spacecraft-doppler-id) —
+  identify an unknown spacecraft by matching its measured Doppler curve against
+  JPL Horizons predictions. Uses TDM files produced by this converter.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE)
