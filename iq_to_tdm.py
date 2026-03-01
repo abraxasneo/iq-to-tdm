@@ -84,10 +84,47 @@ def read_sigmf_meta(meta_path):
     }
 
 
+class _LazyIntIQ:
+    """
+    Lazy int->complex64 adapter for large IQ files.
+
+    Keeps only the raw int16/int8/uint8 memmap in memory and converts
+    each slice on-the-fly.  Avoids allocating 2–3× the file size in RAM
+    when converting ci16/ci8/cu8 recordings upfront.
+
+    Supports len() and slice indexing — the only operations used by
+    process_iq().
+    """
+    def __init__(self, raw, datatype):
+        self._raw = raw       # int memmap, length = 2 × n_complex_samples
+        self._dt  = datatype  # 'ci16_le', 'ci8', 'cu8', …
+
+    def __len__(self):
+        return len(self._raw) // 2
+
+    def __getitem__(self, sl):
+        if isinstance(sl, slice):
+            start, stop, _ = sl.indices(len(self))
+        else:
+            start, stop = int(sl), int(sl) + 1
+        chunk = self._raw[start * 2 : stop * 2]
+        if self._dt.startswith('ci16'):
+            return (chunk[0::2].astype(np.float32)
+                    + 1j * chunk[1::2].astype(np.float32)) / 32768.0
+        elif self._dt.startswith('ci8'):
+            return (chunk[0::2].astype(np.float32)
+                    + 1j * chunk[1::2].astype(np.float32)) / 128.0
+        else:  # cu8
+            f = chunk.astype(np.float32) - 127.5
+            return (f[0::2] + 1j * f[1::2]).astype(np.complex64)
+
+
 def load_iq(data_path, datatype, max_samples=None, skip_samples=None):
     """
-    Load IQ file and return complex64 array.
+    Load IQ file and return complex64 array (or lazy wrapper for large int files).
     Uses np.memmap for files larger than 2 GB to avoid loading everything into RAM.
+    For large ci16/ci8/cu8 files the raw memmap is wrapped in _LazyIntIQ so that
+    only the current integration block is converted at a time (saves 2–3× peak RAM).
     """
     raw_map = {
         "cf32_le": np.float32, "cf32_be": np.float32,
@@ -115,6 +152,11 @@ def load_iq(data_path, datatype, max_samples=None, skip_samples=None):
         raw = np.memmap(str(data_path), dtype=elem_dtype, mode='r',
                         offset=skip_elems * np.dtype(elem_dtype).itemsize,
                         shape=(n_elems,))
+        # For integer types, avoid converting the whole file to complex64 upfront:
+        # a 14 GB ci16 file would require ~29 GB of RAM for the conversion.
+        # Return a lazy wrapper that converts one integration block at a time.
+        if not dt.startswith('cf'):
+            return _LazyIntIQ(raw, dt)
     else:
         raw = np.fromfile(str(data_path), dtype=elem_dtype)
         raw = raw[skip_elems : skip_elems + n_elems]
