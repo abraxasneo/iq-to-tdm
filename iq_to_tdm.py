@@ -912,6 +912,7 @@ def plot_spectrum(iq, sample_rate, center_freq, output_png,
     print(f"  Spectrum saved: {output_png}")
 
 
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1103,7 +1104,6 @@ def main():
 
     print(f"\nNASA naming convention:")
     print(f"  {args.station}_Antenna1_{t0.strftime('%Y%m%d%H%M%S')}.tdm")
-    print(f"\nTo submit to NASA, contact the Artemis Amateur Tracking program.")
 
 
 if __name__ == "__main__":
