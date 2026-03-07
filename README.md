@@ -17,8 +17,8 @@ standard NASA file (TDM) with the Doppler shift over time.
 **It works automatically** — just point it at your `.sigmf-meta` or `.wav` file:
 
 ```bash
-python iq_to_tdm.py --input recording.sigmf-meta --station MY_CALLSIGN --auto
-python iq_to_tdm.py --input "06-Mar-2026 011432.831 2271.222MHz.wav" --station MY_CALLSIGN
+python iq_to_tdm.py --input recording.sigmf-meta --station MY_CALLSIGN --spacecraft LRO
+python iq_to_tdm.py --input "recording.wav" --station MY_CALLSIGN --spacecraft ORION
 ```
 
 The `--auto` flag makes the converter decide per second whether your signal has a direct
@@ -72,14 +72,14 @@ Artemis I OQPSK tracking (`quad` files).
 ## Quick Start
 
 ```bash
-# Any spacecraft — auto-detects modulation type
 python iq_to_tdm.py \
-    --input  recording.sigmf-meta \
+    --input recording.sigmf-meta \
     --station MY_CALLSIGN \
-    --participant-1 ORION \
-    --auto \
-    --output output.tdm
+    --spacecraft LRO
 ```
+
+That's it — the output TDM file is named automatically (`MY_CALLSIGN_LRO_20260306_001410.tdm`).
+Add `--location "52.23,21.01,110"` to embed your station coordinates in the TDM header.
 
 ---
 
@@ -234,9 +234,8 @@ CAMRAS files are CC BY 4.0, Stichting CAMRAS, Dwingeloo.
 python iq_to_tdm.py \
     --input  recording.sigmf-meta \
     --station MY_CALLSIGN \
-    --participant-1 ORION \
-    --auto \
-    --output output.tdm
+    --spacecraft ORION \
+    --auto
 ```
 
 The converter tries direct carrier detection first; if the block SNR is too low, it
@@ -255,8 +254,8 @@ Summary at end: `Detection modes: carrier=59  OQPSK=1`
 python iq_to_tdm.py \
     --input  "06-Mar-2026 011432.831 2271.222MHz.wav" \
     --station MY_CALLSIGN \
-    --participant-1 LRO \
-    --output lro_tracking.tdm
+    --spacecraft LRO \
+    --location "52.23,21.01,110"
 ```
 
 WAV files are auto-detected by the `.wav` extension. Center frequency, sample rate and
@@ -269,9 +268,7 @@ the filename. Supports standard WAV (RIFF) and RF64 for files larger than 4 GB.
 python iq_to_tdm.py \
     --input  examples/gqrx_20260221_151916_2260790300_125000_fc.sigmf-meta \
     --station SP5LOT \
-    --participant-1 KPLO \
-    --integration 1.0 \
-    --output SP5LOT_KPLO_20260221.tdm
+    --spacecraft KPLO
 ```
 
 Progress bar (default CW mode):
@@ -296,11 +293,10 @@ When the carrier is near data sidebands, narrow the search window:
 python iq_to_tdm.py \
     --input  examples/small.sigmf-meta \
     --station MY_CALLSIGN \
-    --participant-1 ORION \
+    --spacecraft ORION \
     --integration 0.3 \
     --carrier-hint -45617 \
-    --hint-bw 15000 \
-    --output artemis_small.tdm
+    --hint-bw 15000
 ```
 
 ### Artemis II — OQPSK suppressed-carrier
@@ -309,10 +305,9 @@ python iq_to_tdm.py \
 python iq_to_tdm.py \
     --input  artemis2_recording.sigmf-meta \
     --station MY_CALLSIGN \
-    --participant-1 ORION \
+    --spacecraft ORION \
     --oqpsk \
-    --no-excl-sidebands \
-    --output artemis2.tdm
+    --no-excl-sidebands
 ```
 
 Note: `--oqpsk` incurs ~12 dB SNR penalty vs direct carrier detection. For weak signals:
@@ -332,8 +327,7 @@ No extra options needed — this always happens:
 python iq_to_tdm.py \
     --input  recording.sigmf-meta \
     --station MY_CALLSIGN \
-    --auto \
-    --output output.tdm
+    --auto
 ```
 
 Example output when signal is weak (e.g. LRO on HackRF):
@@ -410,8 +404,9 @@ Periods with no detectable signal are reported as +0.000 Hz.
 --input,   -i   .sigmf-meta, .wav, or GQRX .raw/.bin/.iq file     [required]
 --station, -s   Station callsign or name (e.g. SP5LOT)            [required]
 --output,  -o   Output TDM filename (auto-generated if omitted)
---participant-1  Spacecraft name: ORION, KPLO, DANURI, etc.       [default: ORION]
+--spacecraft     Spacecraft name: ORION, KPLO, LRO, DANURI, etc.  [default: ORION]
 --originator     ORIGINATOR field in TDM header                   [default: station]
+--location       Station lat,lon,alt (e.g. 52.23,21.01,110) for TDM comment
 --dsn-station    DSN uplink station name (3-way mode, e.g. DSS-26)
 --integration    Integration interval in seconds                  [default: 1.0]
 --fft-size       FFT window size (power of 2)                     [default: 65536]

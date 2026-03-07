@@ -1279,7 +1279,8 @@ def build_parser():
     p.add_argument("--skip-samples", type=int,  default=None,
                    help="Skip first N samples (for testing mid-file segments)")
     p.add_argument("--output",  "-o", default=None, help="Output TDM filename")
-    p.add_argument("--participant-1", type=str, default=None,
+    p.add_argument("--spacecraft", "--participant-1", type=str, default=None,
+                   dest="spacecraft",
                    help="Spacecraft name for PARTICIPANT_1 (default: ORION)")
     p.add_argument("--location", type=str,
                    help="Station lat,lon,alt (e.g. 52.23,21.01,110) for TDM comment")
@@ -1402,8 +1403,9 @@ def main():
         sys.exit(1)
 
     # -- Write TDM ----------------------------------------------------------
+    sc = args.spacecraft or "ORION"
     out = Path(args.output) if args.output else \
-          Path(f"{args.station}_{t0.strftime('%Y%m%d_%H%M%S')}.tdm")
+          Path(f"{args.station}_{sc}_{t0.strftime('%Y%m%d_%H%M%S')}.tdm")
 
     mode_str = "OQPSK (M-th power /4)" if args.oqpsk else "carrier (Welch)"
     loc_line = ""
@@ -1416,7 +1418,7 @@ def main():
             ew = "E" if lon >= 0 else "W"
             loc_line = f"Station: {args.station} ({abs(lat):.2f}{ns}, {abs(lon):.2f}{ew}{alt})\n"
     auto_cmt = (
-        f"{args.participant_1 or 'ORION'} one-way Doppler tracking\n"
+        f"{args.spacecraft or 'ORION'} one-way Doppler tracking\n"
         f"{loc_line}"
         f"Source: {inp.name}\n"
         f"HW: {info.get('hw','?')} | "
@@ -1425,11 +1427,8 @@ def main():
     )
     write_tdm(meas, out, args.station, cf, args.integration,
               args.originator, args.dsn_station, args.comment or auto_cmt,
-              participant_1=args.participant_1)
+              participant_1=args.spacecraft)
 
-    p1 = args.participant_1 or "ORION"
-    print(f"\nSuggested filename:")
-    print(f"  {args.station}_{p1}_{t0.strftime('%Y%m%d_%H%M%S')}.tdm")
 
 
 if __name__ == "__main__":
