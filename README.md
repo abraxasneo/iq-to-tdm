@@ -179,6 +179,29 @@ using additional IQ recordings from
 RMS = root mean square residual after removing mean offset between our Doppler curve
 and the CAMRAS reference. Best result: **0.3 Hz RMS** (Dec 10).
 
+### 5 — LRO, SP5LOT 2026-03-06 — WAV from SDR Console, weak signal auto-detection
+
+IQ recording by SQ3DHO (HackRF One, SDR Console, 100 kSps, 6.2 min WAV file,
+2271.222 MHz). Conversion and validation by SP5LOT.
+
+The signal was very weak (SNR ~2 dB per 1-second block) — below the default 3.0 dB
+threshold. The converter's adaptive system automatically:
+1. Increased `welch-sub` from 20 to 500 (max averaging, +27 dB gain)
+2. Detected a consistent weak signal in probe (median SNR = 2.0 dB)
+3. Lowered the SNR threshold from 3.0 to 1.6 dB
+
+Result: **74 measurements** with Doppler drift from +28 Hz to −333 Hz.
+
+Spacecraft identification via
+[spacecraft-doppler-id](https://github.com/SP5LOT/spacecraft-doppler-id)
+confirmed **LRO (Lunar Reconnaissance Orbiter)** with **RMS = 52 Hz**
+(best match out of 16 candidates, second place CAPSTONE at 98 Hz).
+
+This validates:
+- WAV IQ input from SDR Console (RF64, auxi XML metadata)
+- Automatic SNR threshold lowering for weak signals
+- End-to-end pipeline: SDR Console WAV → TDM → spacecraft identification
+
 ---
 
 ## Repository Contents — `examples/`
