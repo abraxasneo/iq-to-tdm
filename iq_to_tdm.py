@@ -1281,6 +1281,8 @@ def build_parser():
     p.add_argument("--output",  "-o", default=None, help="Output TDM filename")
     p.add_argument("--participant-1", type=str, default=None,
                    help="Spacecraft name for PARTICIPANT_1 (default: ORION)")
+    p.add_argument("--location", type=str,
+                   help="Station lat,lon,alt (e.g. 52.23,21.01,110) for TDM comment")
     p.add_argument("--comment", type=str)
     p.add_argument("--plot", action="store_true",
                    help="Save Welch spectrum plot to PNG (requires matplotlib)")
@@ -1404,8 +1406,18 @@ def main():
           Path(f"{args.station}_{t0.strftime('%Y%m%d_%H%M%S')}.tdm")
 
     mode_str = "OQPSK (M-th power /4)" if args.oqpsk else "carrier (Welch)"
+    loc_line = ""
+    if args.location:
+        parts = args.location.split(",")
+        if len(parts) >= 2:
+            lat, lon = float(parts[0]), float(parts[1])
+            alt = f", {parts[2]}m" if len(parts) >= 3 else ""
+            ns = "N" if lat >= 0 else "S"
+            ew = "E" if lon >= 0 else "W"
+            loc_line = f"Station: {args.station} ({abs(lat):.2f}{ns}, {abs(lon):.2f}{ew}{alt})\n"
     auto_cmt = (
-        f"Artemis II one-way Doppler tracking\n"
+        f"{args.participant_1 or 'ORION'} one-way Doppler tracking\n"
+        f"{loc_line}"
         f"Source: {inp.name}\n"
         f"HW: {info.get('hw','?')} | "
         f"FFT={args.fft_size} Welch={args.welch_sub} int={args.integration}s | "
