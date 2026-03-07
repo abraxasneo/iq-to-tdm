@@ -2,7 +2,7 @@
 """
 IQ -> NASA CCSDS TDM Converter  (Welch averaging for weak signals)
 ==================================================================
-Converts SDR IQ recordings (SigMF or GQRX) to a NASA CCSDS TDM v2.0 file
+Converts SDR IQ recordings (SigMF, GQRX, or WAV) to a NASA CCSDS TDM v2.0 file
 for Artemis II / lunar mission one-way Doppler tracking.
 
 Key features:
@@ -15,6 +15,9 @@ Key features:
 Usage:
   # SigMF (recommended):
   python iq_to_tdm.py --input recording.sigmf-meta --station MY_CALL --auto
+
+  # WAV IQ (SDR Console, SDR#, HDSDR, SDRuno):
+  python iq_to_tdm.py --input SDRSharp_20260210_120000Z_2216500000Hz_IQ.wav --station MY_CALL
 
   # GQRX raw (freq and rate from filename):
   python iq_to_tdm.py --input gqrx_20260210_120000_2216500000_2000000_fc.raw --station MY_CALL
@@ -39,6 +42,7 @@ import math
 import numpy as np
 import os
 import re
+import struct
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -119,12 +123,15 @@ class _LazyIntIQ:
             return (f[0::2] + 1j * f[1::2]).astype(np.complex64)
 
 
-def load_iq(data_path, datatype, max_samples=None, skip_samples=None):
+def load_iq(data_path, datatype, max_samples=None, skip_samples=None,
+            data_offset=0):
     """
     Load IQ file and return complex64 array (or lazy wrapper for large int files).
     Uses np.memmap for files larger than 2 GB to avoid loading everything into RAM.
     For large ci16/ci8/cu8 files the raw memmap is wrapped in _LazyIntIQ so that
     only the current integration block is converted at a time (saves 2–3× peak RAM).
+
+    data_offset: byte offset where IQ data begins (>0 for WAV files).
     """
     raw_map = {
         "cf32_le": np.float32, "cf32_be": np.float32,
@@ -140,7 +147,8 @@ def load_iq(data_path, datatype, max_samples=None, skip_samples=None):
     file_size = os.path.getsize(str(data_path))
     elem_dtype = raw_map[dt]
     elem_size  = np.dtype(elem_dtype).itemsize
-    n_elems    = file_size // elem_size
+    data_bytes = file_size - data_offset
+    n_elems    = data_bytes // elem_size
     skip_elems = (skip_samples * 2) if skip_samples else 0
     if max_samples:
         n_elems = min(n_elems - skip_elems, max_samples * 2)
@@ -150,7 +158,7 @@ def load_iq(data_path, datatype, max_samples=None, skip_samples=None):
     LARGE_FILE_BYTES = 2 * 1024 ** 3  # 2 GB
     if file_size > LARGE_FILE_BYTES:
         raw = np.memmap(str(data_path), dtype=elem_dtype, mode='r',
-                        offset=skip_elems * np.dtype(elem_dtype).itemsize,
+                        offset=data_offset + skip_elems * np.dtype(elem_dtype).itemsize,
                         shape=(n_elems,))
         # For integer types, avoid converting the whole file to complex64 upfront:
         # a 14 GB ci16 file would require ~29 GB of RAM for the conversion.
@@ -158,7 +166,7 @@ def load_iq(data_path, datatype, max_samples=None, skip_samples=None):
         if not dt.startswith('cf'):
             return _LazyIntIQ(raw, dt)
     else:
-        raw = np.fromfile(str(data_path), dtype=elem_dtype)
+        raw = np.fromfile(str(data_path), dtype=elem_dtype, offset=data_offset)
         raw = raw[skip_elems : skip_elems + n_elems]
 
     if dt.startswith("cf32"):
@@ -206,13 +214,248 @@ def parse_gqrx_filename(name):
 
 
 # ---------------------------------------------------------------------------
+# WAV / RF64 IQ parsing  (SDR Console, SDR#, HDSDR, SDRuno)
+# ---------------------------------------------------------------------------
+
+def parse_wav_iq(wav_path):
+    """
+    Parse a 2-channel (I/Q) WAV or RF64 file.
+
+    Extracts metadata from:
+      - fmt  chunk : sample_rate, bits_per_sample, format_tag
+      - auxi chunk : center_freq, start_time (SDR Console XML or SDRuno binary)
+      - filename   : center_freq fallback (SDR Console / SDR# / HDSDR patterns)
+      - ds64 chunk : true data size for RF64 files >4 GB
+
+    Returns dict: datatype, sample_rate, center_freq, start_time, hw,
+                  data_offset (bytes), data_size (bytes).
+    """
+    with open(wav_path, "rb") as f:
+        head = f.read(12)
+        if len(head) < 12:
+            raise ValueError("WAV file too short")
+        riff_id = head[0:4]
+        wave_id = head[8:12]
+        if wave_id != b"WAVE":
+            raise ValueError(f"Not a WAVE file (got {wave_id!r})")
+        is_rf64 = (riff_id == b"RF64")
+        if riff_id not in (b"RIFF", b"RF64"):
+            raise ValueError(f"Not RIFF/RF64 (got {riff_id!r})")
+
+        ds64_data_size = None
+        fmt_data = None
+        auxi_data = None
+        data_offset = None
+        data_size = None
+
+        while True:
+            ch = f.read(8)
+            if len(ch) < 8:
+                break
+            cid = ch[0:4]
+            csz = struct.unpack("<I", ch[4:8])[0]
+            pos = f.tell()
+
+            if cid == b"ds64":
+                raw = f.read(min(csz, 28))
+                if len(raw) >= 16:
+                    ds64_data_size = struct.unpack("<Q", raw[8:16])[0]
+                f.seek(pos + csz + (csz % 2))
+            elif cid == b"fmt ":
+                fmt_data = f.read(csz)
+                if csz % 2:
+                    f.read(1)
+            elif cid == b"auxi":
+                auxi_data = f.read(csz)
+                if csz % 2:
+                    f.read(1)
+            elif cid == b"data":
+                data_offset = pos
+                data_size = csz
+                if is_rf64 and ds64_data_size is not None:
+                    data_size = ds64_data_size
+                break  # data chunk found — don't read payload
+            else:
+                f.seek(pos + csz + (csz % 2))
+
+    if fmt_data is None:
+        raise ValueError("WAV file has no fmt chunk")
+    if data_offset is None:
+        raise ValueError("WAV file has no data chunk")
+
+    # -- Parse fmt chunk ----------------------------------------------------
+    fmt_tag, n_channels, sample_rate, _, _, bits = \
+        struct.unpack("<HHIIHH", fmt_data[:16])
+    if n_channels != 2:
+        raise ValueError(f"Expected 2 channels (I/Q stereo), got {n_channels}")
+
+    if fmt_tag == 1 and bits == 16:
+        datatype = "ci16_le"
+    elif fmt_tag == 3 and bits == 32:
+        datatype = "cf32_le"
+    elif fmt_tag == 1 and bits == 8:
+        datatype = "cu8"
+    else:
+        raise ValueError(
+            f"Unsupported WAV format: tag={fmt_tag} bits={bits}")
+
+    info = {
+        "datatype":    datatype,
+        "sample_rate": float(sample_rate),
+        "center_freq": 0.0,
+        "start_time":  None,
+        "hw":          "",
+        "data_offset": data_offset,
+        "data_size":   data_size,
+    }
+
+    if auxi_data:
+        _parse_auxi(auxi_data, info)
+
+    if not info["center_freq"]:
+        _parse_wav_filename(str(wav_path), info)
+
+    return info
+
+
+def _parse_auxi(auxi_data, info):
+    """Route auxi chunk to XML or binary parser."""
+    for encoding in ("utf-16le", "utf-8"):
+        try:
+            text = auxi_data.decode(encoding)
+            if "<" in text:
+                _parse_auxi_xml(text, info)
+                return
+        except (UnicodeDecodeError, ValueError):
+            continue
+    # Binary struct (SDRuno: >=40 bytes)
+    if len(auxi_data) >= 40:
+        _parse_auxi_binary(auxi_data, info)
+
+
+def _parse_auxi_xml(xml_text, info):
+    """Parse SDR Console auxi XML (RadioCenterFreq, UTC, …)."""
+    from xml.etree import ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text.strip())
+        defn = root.find(".//Definition")
+        attrs = defn.attrib if defn is not None else root.attrib
+    except Exception:
+        attrs = {}
+        for m in re.finditer(r'(\w+)\s*=\s*"([^"]*)"', xml_text):
+            attrs[m.group(1)] = m.group(2)
+
+    if "RadioCenterFreq" in attrs:
+        try:
+            info["center_freq"] = float(attrs["RadioCenterFreq"])
+        except ValueError:
+            pass
+    if "SampleRate" in attrs:
+        try:
+            sr = float(attrs["SampleRate"])
+            if sr > 0:
+                info["sample_rate"] = sr
+        except ValueError:
+            pass
+
+    for key in ("UTC", "CurrentTimeUTC"):
+        if key in attrs and attrs[key]:
+            try:
+                info["start_time"] = _parse_dt(attrs[key])
+                break
+            except ValueError:
+                pass
+
+    if not info.get("start_time") and "UTCSeconds" in attrs:
+        try:
+            ts = float(attrs["UTCSeconds"])
+            info["start_time"] = datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (ValueError, OSError):
+            pass
+
+    info["hw"] = attrs.get("Receiver", attrs.get("HW", ""))
+
+
+def _parse_auxi_binary(auxi_data, info):
+    """Parse SDRuno binary auxi struct (SYSTEMTIME + center freq)."""
+    year, month, _, day, hour, minute, second, ms = \
+        struct.unpack("<8H", auxi_data[0:16])
+    if 1970 <= year <= 2100 and 1 <= month <= 12:
+        try:
+            info["start_time"] = datetime(
+                year, month, day, hour, minute, second,
+                ms * 1000, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    center_freq = struct.unpack("<d", auxi_data[32:40])[0]
+    if center_freq > 0:
+        info["center_freq"] = center_freq
+
+
+def _parse_wav_filename(name, info):
+    """Try to extract center frequency and start time from WAV filename."""
+    basename = os.path.basename(name)
+
+    # GQRX: "gqrx_YYYYMMDD_HHMMSS_FREQ[_RATE_fc].wav"
+    m = re.search(r'gqrx_(\d{8})_(\d{6})_(\d+?)(?:_(\d+))?(?:_fc)?\.wav',
+                  basename, re.IGNORECASE)
+    if m:
+        info["center_freq"] = float(m.group(3))
+        if m.group(4):
+            info["sample_rate"] = float(m.group(4))
+        d, t = m.group(1), m.group(2)
+        try:
+            info["start_time"] = datetime(
+                int(d[:4]), int(d[4:6]), int(d[6:8]),
+                int(t[:2]), int(t[2:4]), int(t[4:6]),
+                tzinfo=timezone.utc)
+        except ValueError:
+            pass
+        return
+
+    # SDR Console: "162.550MHz.wav"
+    m = re.search(r'([\d.]+)\s*MHz', basename, re.IGNORECASE)
+    if m:
+        try:
+            info["center_freq"] = float(m.group(1)) * 1e6
+        except ValueError:
+            pass
+
+    # SDR#: "_162550000Hz"
+    if not info.get("center_freq"):
+        m = re.search(r'[_-](\d+)\s*Hz', basename, re.IGNORECASE)
+        if m:
+            info["center_freq"] = float(m.group(1))
+
+    # HDSDR: "_162550kHz"
+    if not info.get("center_freq"):
+        m = re.search(r'[_-](\d+)\s*kHz', basename, re.IGNORECASE)
+        if m:
+            info["center_freq"] = float(m.group(1)) * 1e3
+
+    # SDR# / HDSDR: "SDRSharp_YYYYMMDD_HHMMSSZ_..."
+    if not info.get("start_time"):
+        m = re.search(r'(\d{8})[_-](\d{6})Z?[_-]', basename)
+        if m:
+            d, t = m.group(1), m.group(2)
+            try:
+                info["start_time"] = datetime(
+                    int(d[:4]), int(d[4:6]), int(d[6:8]),
+                    int(t[:2]), int(t[2:4]), int(t[4:6]),
+                    tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Time helpers
 # ---------------------------------------------------------------------------
 
 def _parse_dt(s):
     s = s.strip().rstrip("Z")
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
-                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
+                "%d-%m-%Y %H:%M:%S.%f", "%d-%m-%Y %H:%M:%S"):
         try:
             return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
@@ -715,41 +958,94 @@ def process_iq(
                     print(f"  [adaptive] probe acceptance after adaptation: "
                           f"{n_ok_probe}/{probe_n} ({accept_rate*100:.0f}%)")
 
-                    # If still no signal even at max welch-sub, the recording
-                    # may have started before the spacecraft appeared. Scan
-                    # forward through the file to find the onset block.
+                    # If still no signal even at max welch-sub, check if
+                    # the probe blocks have weak-but-consistent SNR.
+                    # Aggregation doesn't help with Doppler-drifting signals
+                    # (carrier smears across bins), so instead detect the
+                    # pattern of "consistent weak SNR" and auto-lower threshold.
                     if accept_rate == 0.0:
-                        print(f"  [adaptive] no signal in probe window -- "
-                              f"scanning file for signal onset...")
-                        scan_step = max(probe_n, max(1, n_blocks // 30))
-                        found_at = None
-                        for scan_i in range(probe_n, n_blocks, scan_step):
-                            blk = iq[scan_i * spb : (scan_i + 1) * spb]
-                            if len(blk) < spb:
-                                break
-                            try:
-                                _, snr_scan = estimate_carrier(
-                                    blk, sample_rate, center_freq,
-                                    fft_size=eff_fft, n_sub=n_welch_sub,
-                                    search_bw=search_bw, carrier_hint=carrier_hint,
-                                    hint_bw=hint_bw, excl_sidebands=excl_sidebands,
-                                    oqpsk=oqpsk,
-                                )
-                                if snr_scan >= min_snr_db:
-                                    found_at = scan_i
-                                    break
-                            except Exception:
-                                pass
-                        if found_at is not None:
-                            onset_sec = found_at * integration_sec
-                            onset_t = start_time + timedelta(seconds=onset_sec)
-                            print(f"  [adaptive] signal found at block {found_at+1}/{n_blocks} "
-                                  f"(~{onset_sec/60:.1f} min into recording, "
-                                  f"~{onset_t.strftime('%H:%M:%S')} UTC)")
-                            print(f"  Blocks before onset will be stored as 0 Hz.")
+                        probe_snrs = sorted([s for _, _, s in probe_raw])
+                        median_probe_snr = probe_snrs[len(probe_snrs) // 2]
+
+                        if median_probe_snr >= 1.5:
+                            # Signal present but below threshold — auto-lower
+                            new_thr = max(1.5, median_probe_snr * 0.8)
+                            print(f"  [adaptive] weak signal in probe "
+                                  f"(median SNR={median_probe_snr:.1f} dB) -- "
+                                  f"lowering min-snr: {min_snr_db:.1f} -> "
+                                  f"{new_thr:.1f} dB")
+                            min_snr_db = new_thr
+                            # Re-score probe blocks with new threshold
+                            measurements = [(t2, f2, s2) for t2, f2, s2 in probe_raw
+                                            if s2 >= min_snr_db]
+                            skipped = sum(1 for _, _, s in probe_raw if s < min_snr_db)
+                            rejected_snrs = [s for _, _, s in probe_raw if s < min_snr_db]
+                            n_ok_probe = len(measurements)
+                            accept_rate = n_ok_probe / max(probe_n, 1)
                         else:
-                            print(f"  [adaptive] no signal found anywhere in recording.")
-                            print(f"  Check antenna pointing, center frequency, or IQ file.")
+                            # Truly no signal — scan forward with lower threshold
+                            print(f"  [adaptive] no signal in probe window -- "
+                                  f"scanning file for signal onset...")
+                            scan_snr_thr = max(1.5, min_snr_db * 0.5)
+                            scan_step = max(probe_n, max(1, n_blocks // 30))
+                            found_at = None
+                            for scan_i in range(probe_n, n_blocks, scan_step):
+                                blk = iq[scan_i * spb : (scan_i + 1) * spb]
+                                if len(blk) < spb:
+                                    break
+                                try:
+                                    _, snr_scan = estimate_carrier(
+                                        blk, sample_rate, center_freq,
+                                        fft_size=eff_fft, n_sub=n_welch_sub,
+                                        search_bw=search_bw, carrier_hint=carrier_hint,
+                                        hint_bw=hint_bw, excl_sidebands=excl_sidebands,
+                                        oqpsk=oqpsk,
+                                    )
+                                    if snr_scan >= scan_snr_thr:
+                                        found_at = scan_i
+                                        break
+                                except Exception:
+                                    pass
+                            if found_at is not None:
+                                onset_sec = found_at * integration_sec
+                                onset_t = start_time + timedelta(seconds=onset_sec)
+                                print(f"  [adaptive] signal found at block "
+                                      f"{found_at+1}/{n_blocks} "
+                                      f"(~{onset_sec/60:.1f} min into recording, "
+                                      f"~{onset_t.strftime('%H:%M:%S')} UTC)")
+                                # Auto-lower threshold based on signal strength
+                                test_snrs = []
+                                for ti in range(found_at, min(found_at + 10, n_blocks)):
+                                    tblk = iq[ti * spb : (ti + 1) * spb]
+                                    if len(tblk) < spb:
+                                        break
+                                    try:
+                                        _, ts = estimate_carrier(
+                                            tblk, sample_rate, center_freq,
+                                            fft_size=eff_fft, n_sub=n_welch_sub,
+                                            search_bw=search_bw,
+                                            carrier_hint=carrier_hint,
+                                            hint_bw=hint_bw,
+                                            excl_sidebands=excl_sidebands,
+                                            oqpsk=oqpsk,
+                                        )
+                                        test_snrs.append(ts)
+                                    except Exception:
+                                        pass
+                                if test_snrs:
+                                    med_snr = sorted(test_snrs)[len(test_snrs) // 2]
+                                    if med_snr < min_snr_db and med_snr >= 1.5:
+                                        new_thr = max(1.5, med_snr * 0.8)
+                                        print(f"  [adaptive] weak signal "
+                                              f"(median SNR={med_snr:.1f} dB) -- "
+                                              f"lowering min-snr: "
+                                              f"{min_snr_db:.1f} -> {new_thr:.1f} dB")
+                                        min_snr_db = new_thr
+                            else:
+                                print(f"  [adaptive] no signal found anywhere "
+                                      f"in recording.")
+                                print(f"  Check antenna pointing, center "
+                                      f"frequency, or IQ file.")
 
                     print(f"  Continuing from block {i+2}/{n_blocks} "
                           f"with welch-sub={n_welch_sub}...\n")
@@ -923,7 +1219,7 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--input",  "-i", required=True,
-                   help=".sigmf-meta  OR  .raw/.bin/.iq (GQRX)")
+                   help=".sigmf-meta  OR  .wav (SDR Console/SDR#/HDSDR)  OR  .raw/.bin/.iq (GQRX)")
     p.add_argument("--freq",  type=float, help="Center frequency [Hz]")
     p.add_argument("--rate",  type=float, help="Sample rate [Sps]")
     p.add_argument("--start", type=str,   help="Recording start time (ISO-8601 UTC)")
@@ -1004,8 +1300,9 @@ def main():
     # -- Detect format ------------------------------------------------------
     suffix   = inp.suffix.lower()
     is_sigmf = suffix == ".sigmf-meta"
+    is_wav   = suffix == ".wav"
     is_gqrx  = suffix in (".raw", ".bin", ".iq")
-    if not is_sigmf and not is_gqrx:
+    if not is_sigmf and not is_wav and not is_gqrx:
         meta_g = inp.with_suffix(".sigmf-meta")
         if meta_g.exists():
             inp, is_sigmf = meta_g, True
@@ -1027,6 +1324,22 @@ def main():
             print(f"  Start     : {info['start_time'].isoformat()}")
         print(f"\nLoading IQ from: {data_path}")
         iq = load_iq(data_path, info["datatype"], args.max_samples, args.skip_samples)
+    elif is_wav:
+        data_path = inp
+        print(f"[WAV] {inp.name}")
+        info = parse_wav_iq(inp)
+        print(f"  Datatype  : {info['datatype']}")
+        print(f"  Rate      : {info['sample_rate']/1e6:.3f} Msps")
+        if info["center_freq"]:
+            print(f"  Freq      : {info['center_freq']/1e6:.6f} MHz")
+        if info["start_time"]:
+            print(f"  Start     : {info['start_time'].isoformat()}")
+        if info.get("hw"):
+            print(f"  HW        : {info['hw']}")
+        print(f"  Data at   : offset {info['data_offset']} bytes")
+        print(f"\nLoading IQ from: {data_path}")
+        iq = load_iq(data_path, info["datatype"], args.max_samples, args.skip_samples,
+                     data_offset=info["data_offset"])
     else:
         data_path = inp
         fn_info   = parse_gqrx_filename(inp.name)
