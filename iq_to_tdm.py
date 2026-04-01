@@ -756,7 +756,6 @@ def _viterbi_ridge(psd_db, freq_axis, max_drift_hz_per_step, stack_k=1):
         track_bins[t] = backptr[t + 1, track_bins[t + 1]]
 
     # Extract frequencies and SNR along track, with sub-bin interpolation
-    bin_hz = freq_axis[1] - freq_axis[0] if len(freq_axis) > 1 else 1.0
     track_freq = np.zeros(nf)
     track_snr = np.zeros(nf)
     for t in range(nf):
@@ -1954,7 +1953,7 @@ def process_iq(
 
 # Spacecraft name → JPL Horizons SPK ID mapping
 _SPACECRAFT_SPK = {
-    'ORION': '-1023', 'ARTEMIS': '-1023',
+    'ORION': '-1024', 'ARTEMIS': '-1024',
     'LRO': '-85',
     'KPLO': '-155', 'DANURI': '-155',
     'CAPSTONE': '-1176',
@@ -2015,7 +2014,7 @@ def _query_horizons(spk_id, site_coord, t_start_str, t_stop_str):
             continue
         m = re.match(
             r'\s*(\d{4}-\w{3}-\d{2}\s+\d{2}:\d{2})'
-            r'\s+\S+\s+([\d.]+)\s+([\d.]+)\s+[\d.]+\s+([-\d.]+)',
+            r'\s+\S+\s+([-\d.]+)\s+([-\d.]+)\s+[-\d.]+\s+([-\d.]+)',
             line
         )
         if m:
@@ -2025,37 +2024,6 @@ def _query_horizons(spk_id, site_coord, t_start_str, t_stop_str):
             deldot = float(m.group(4))
             rows.append((dt, deldot, elev))
     return rows if rows else None
-
-
-def _polyfit_simple(x, y, degree):
-    """Least-squares polynomial fit (pure Python). Returns [a0, a1, ..., an]."""
-    n = len(x)
-    ncols = degree + 1
-    ata = [[0.0] * ncols for _ in range(ncols)]
-    aty = [0.0] * ncols
-    for i in range(n):
-        powers = [1.0]
-        for _ in range(degree):
-            powers.append(powers[-1] * x[i])
-        for r in range(ncols):
-            for c in range(ncols):
-                ata[r][c] += powers[r] * powers[c]
-            aty[r] += powers[r] * y[i]
-    aug = [ata[r][:] + [aty[r]] for r in range(ncols)]
-    for col in range(ncols):
-        max_row = max(range(col, ncols), key=lambda r: abs(aug[r][col]))
-        aug[col], aug[max_row] = aug[max_row], aug[col]
-        pivot = aug[col][col]
-        if abs(pivot) < 1e-30:
-            raise ValueError("Singular matrix")
-        for j in range(col, ncols + 1):
-            aug[col][j] /= pivot
-        for r in range(ncols):
-            if r != col:
-                fac = aug[r][col]
-                for j in range(col, ncols + 1):
-                    aug[r][j] -= fac * aug[col][j]
-    return [aug[r][ncols] for r in range(ncols)]
 
 
 def validate_with_horizons(measurements, center_freq_hz, spacecraft_name,
@@ -2143,7 +2111,8 @@ def validate_with_horizons(measurements, center_freq_hz, spacecraft_name,
             try:
                 t0 = pairs[0][0]
                 t_sec = [(p[0] - t0).total_seconds() for p in pairs]
-                coeffs = _polyfit_simple(t_sec, diffs, 1)
+                poly = np.polyfit(t_sec, diffs, 1)  # [slope, intercept]
+                coeffs = [poly[1], poly[0]]  # [intercept, slope]
                 rate = abs(coeffs[1])
                 if rate > 0.1:
                     vals = [coeffs[0] + coeffs[1]*t for t in t_sec]
@@ -2172,6 +2141,52 @@ def validate_with_horizons(measurements, center_freq_hz, spacecraft_name,
     if not best:
         print("  [validate] No time overlap with Horizons.")
         return None
+
+    # --- Auto-segment: if RMS is high, try to find a breakpoint ---
+    # This detects transponder mode changes (1-way ↔ 2-way) that produce
+    # a frequency step spread over ~1 min, missed by the block-level jump detector.
+    rms_check = best.get('rms_const', best['rms'])  # use pre-drift-fit RMS
+    if rms_check > 50.0 and len(best['pairs']) >= 40:
+        print(f"  [validate] RMS {rms_check:.1f} Hz (pre-fit) — "
+              f"searching for mode transition...")
+        diffs = [p[3] for p in best['pairs']]
+        n = len(diffs)
+        best_split_rms = rms_check
+        best_split_idx = None
+        # Try split points from 20% to 80%
+        for split in range(n // 5, 4 * n // 5):
+            seg1 = diffs[:split]
+            seg2 = diffs[split:]
+            if len(seg1) < 10 or len(seg2) < 10:
+                continue
+            dc1 = sum(seg1) / len(seg1)
+            dc2 = sum(seg2) / len(seg2)
+            # DC offset must differ by > 50 Hz (real transition)
+            if abs(dc1 - dc2) < 50:
+                continue
+            r1 = [d - dc1 for d in seg1]
+            r2 = [d - dc2 for d in seg2]
+            rms_combined = math.sqrt(
+                (sum(r**2 for r in r1) + sum(r**2 for r in r2)) / n
+            )
+            if rms_combined < best_split_rms * 0.5:
+                best_split_rms = rms_combined
+                best_split_idx = split
+        if best_split_idx is not None:
+            t_split = best['pairs'][best_split_idx][0]
+            # Create synthetic transition and dispatch to _validate_segments
+            seg1_dc = sum(diffs[:best_split_idx]) / best_split_idx
+            seg2_dc = sum(diffs[best_split_idx:]) / (n - best_split_idx)
+            print(f"  [validate] Found transition at {t_split.strftime('%H:%M:%S')}: "
+                  f"DC {seg1_dc:+.0f} → {seg2_dc:+.0f} Hz "
+                  f"(split RMS {best_split_rms:.1f} Hz)")
+            auto_transitions = [(
+                t_split,
+                center_freq_hz + seg1_dc,
+                center_freq_hz + seg2_dc,
+            )]
+            return _validate_segments(measurements, center_freq_hz, hor,
+                                      auto_transitions)
 
     # Report
     print(f"  [validate] Doppler mode    : {best['mode']}")
